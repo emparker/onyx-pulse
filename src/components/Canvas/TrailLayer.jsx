@@ -5,54 +5,69 @@ import { TRAIL_DECAY, MARBLE_RADIUS, COLORS } from '../../engine/constants.js';
  * TrailLayer - Manages marble trail effects
  * Tracks marble positions and renders fading trails with exponential decay
  * Ghostly echoes of movement - motion memory
+ *
+ * OPTIMIZED: Uses circular buffer pattern to avoid O(n) shift operations
  */
 
-const MAX_TRAIL_LENGTH = 18;
-const MIN_DISTANCE_FOR_TRAIL = 2; // Minimum movement to add trail point
+const MAX_TRAIL_LENGTH = 12; // Reduced from 18 for performance
+const MIN_DISTANCE_FOR_TRAIL = 3; // Increased from 2 to reduce point count
 
 /**
  * Hook to manage marble trail effects
  */
 export function useTrailLayer() {
-  // Map of marble id -> array of trail points
+  // Map of marble id -> trail data with circular buffer
   const trailsRef = useRef(new Map());
 
   // Update trails with current marble positions
   const updateTrails = useCallback((marbles) => {
     const currentIds = new Set();
+    const len = marbles.length;
 
-    marbles.forEach((marble) => {
+    for (let m = 0; m < len; m++) {
+      const marble = marbles[m];
       const id = marble.id;
       currentIds.add(id);
 
       const { x, y } = marble.position;
       const color = marble.plugin?.color || '#00ffff';
 
-      if (!trailsRef.current.has(id)) {
-        // New marble, initialize trail
-        trailsRef.current.set(id, []);
+      let trailData = trailsRef.current.get(id);
+      if (!trailData) {
+        // New marble - initialize with circular buffer
+        trailData = {
+          points: new Array(MAX_TRAIL_LENGTH),
+          head: 0,  // Next write position
+          count: 0, // Number of valid points
+          color,
+        };
+        trailsRef.current.set(id, trailData);
       }
 
-      const trail = trailsRef.current.get(id);
-      const lastPoint = trail[trail.length - 1];
+      // Get last added point
+      const lastIdx = (trailData.head - 1 + MAX_TRAIL_LENGTH) % MAX_TRAIL_LENGTH;
+      const lastPoint = trailData.count > 0 ? trailData.points[lastIdx] : null;
 
       // Only add point if marble has moved enough
       if (!lastPoint ||
           Math.abs(lastPoint.x - x) > MIN_DISTANCE_FOR_TRAIL ||
           Math.abs(lastPoint.y - y) > MIN_DISTANCE_FOR_TRAIL) {
-        trail.push({
-          x,
-          y,
-          color,
-          alpha: 1,
-        });
 
-        // Limit trail length
-        if (trail.length > MAX_TRAIL_LENGTH) {
-          trail.shift();
-        }
+        // Write to circular buffer
+        trailData.points[trailData.head] = { x, y, alpha: 1 };
+        trailData.head = (trailData.head + 1) % MAX_TRAIL_LENGTH;
+        if (trailData.count < MAX_TRAIL_LENGTH) trailData.count++;
       }
-    });
+
+      // Update color (in case marble color changed)
+      trailData.color = color;
+
+      // Apply decay to all points in buffer
+      for (let i = 0; i < trailData.count; i++) {
+        const idx = (trailData.head - 1 - i + MAX_TRAIL_LENGTH * 2) % MAX_TRAIL_LENGTH;
+        trailData.points[idx].alpha *= TRAIL_DECAY;
+      }
+    }
 
     // Remove trails for marbles that no longer exist
     for (const id of trailsRef.current.keys()) {
@@ -60,57 +75,44 @@ export function useTrailLayer() {
         trailsRef.current.delete(id);
       }
     }
-
-    // Apply decay to all trail points
-    trailsRef.current.forEach((trail) => {
-      trail.forEach((point) => {
-        point.alpha *= TRAIL_DECAY;
-      });
-
-      // Remove fully faded points
-      while (trail.length > 0 && trail[0].alpha < 0.02) {
-        trail.shift();
-      }
-    });
   }, []);
 
   // Render all trails to canvas context
   const renderTrails = useCallback((ctx) => {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
+    ctx.shadowBlur = 0; // Disable shadow for trails (performance)
 
-    trailsRef.current.forEach((trail) => {
-      if (trail.length < 2) return;
+    trailsRef.current.forEach((trailData) => {
+      if (trailData.count < 2) return;
 
-      // Draw trail as connected segments with decreasing size and alpha
-      for (let i = 0; i < trail.length - 1; i++) {
-        const point = trail[i];
+      const { points, head, count, color } = trailData;
+      ctx.fillStyle = color;
+
+      // Draw trail points (oldest to newest)
+      for (let i = count - 1; i >= 1; i--) {
+        const idx = (head - 1 - i + MAX_TRAIL_LENGTH * 2) % MAX_TRAIL_LENGTH;
+        const point = points[idx];
+
+        if (point.alpha < 0.02) continue;
 
         // Progress through the trail (0 = oldest, 1 = newest)
-        const progress = i / trail.length;
+        const progress = (count - 1 - i) / count;
 
-        // Size decreases along the trail (older = smaller)
-        const sizeProgress = 0.5 + progress * 0.5; // 50% to 100%
-        const radius = MARBLE_RADIUS * 0.5 * sizeProgress * point.alpha;
+        // Size decreases along the trail
+        const sizeProgress = 0.5 + progress * 0.5;
+        const radius = MARBLE_RADIUS * 0.4 * sizeProgress * point.alpha;
 
         if (radius < 0.5) continue;
 
-        // Calculate opacity based on age (using design system values)
-        let targetOpacity;
-        if (progress > 0.7) {
-          targetOpacity = COLORS.trail.opacityFresh;
-        } else if (progress > 0.3) {
-          targetOpacity = COLORS.trail.opacityMid;
-        } else {
-          targetOpacity = COLORS.trail.opacityOld;
-        }
+        // Simplified opacity calculation
+        const targetOpacity = progress > 0.6 ? COLORS.trail.opacityFresh :
+                             progress > 0.3 ? COLORS.trail.opacityMid :
+                             COLORS.trail.opacityOld;
 
+        ctx.globalAlpha = targetOpacity * point.alpha;
         ctx.beginPath();
         ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = point.color;
-        ctx.globalAlpha = targetOpacity * point.alpha;
-        ctx.shadowColor = point.color;
-        ctx.shadowBlur = 6 * point.alpha;
         ctx.fill();
       }
     });

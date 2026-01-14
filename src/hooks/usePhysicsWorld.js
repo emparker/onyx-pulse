@@ -22,7 +22,6 @@ export function usePhysicsWorld(width, height, onCollisionCallback) {
   const worldRef = useRef(null);
   const boundsRef = useRef(null);
   const rafRef = useRef(null);
-  const lastTimeRef = useRef(0);
 
   // Initialize physics engine
   useEffect(() => {
@@ -39,29 +38,13 @@ export function usePhysicsWorld(width, height, onCollisionCallback) {
     }
 
     // Physics update loop (in rAF, not React render cycle)
-    // Uses fixed time step with substeps for reliable collision detection
-    const FIXED_DELTA = 16.667; // 60fps equivalent
-    const MAX_SUBSTEPS = 3;
+    // Uses STRICT fixed timestep - never try to "catch up" to prevent spiral of death
+    const FIXED_DELTA = 16.667; // Always simulate at 60fps equivalent
 
-    const update = (time) => {
-      if (lastTimeRef.current === 0) {
-        lastTimeRef.current = time;
-      }
-
-      const delta = time - lastTimeRef.current;
-      lastTimeRef.current = time;
-
-      // Cap delta to prevent spiral of death
-      const cappedDelta = Math.min(delta, FIXED_DELTA * MAX_SUBSTEPS);
-
-      // Run multiple smaller steps for better collision detection
-      const steps = Math.ceil(cappedDelta / FIXED_DELTA);
-      const stepDelta = cappedDelta / steps;
-
-      for (let i = 0; i < steps; i++) {
-        Matter.Engine.update(engine, stepDelta);
-      }
-
+    const update = () => {
+      // Single fixed-step update - no accumulator, no catch-up
+      // This keeps physics stable even when rendering is slow
+      Matter.Engine.update(engine, FIXED_DELTA);
       rafRef.current = requestAnimationFrame(update);
     };
 

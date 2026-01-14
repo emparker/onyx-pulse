@@ -163,11 +163,14 @@ npm run preview      # Test production build locally
 
 **Exit Criteria:** User can trap marbles in custom shapes
 
-### Day 5: Persistence & Sharing
-- [ ] State serialization to Base64 URL
-- [ ] URL parsing on load → restore state
-- [ ] Tone.Recorder integration
-- [ ] Export as .webm audio file
+### Day 5: Persistence & Sharing (DEFERRED)
+> **Status:** Deferred. Implementation design documented in `docs/FUTURE_FEATURES.md`
+
+Features planned but not yet implemented:
+- State serialization to Base64 URL
+- URL parsing on load → restore state
+- Tone.Recorder integration
+- Export as .webm audio file
 
 **Exit Criteria:** Shareable links produce identical playback
 

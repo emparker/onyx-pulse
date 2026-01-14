@@ -100,6 +100,10 @@ export function PhysicsCanvas() {
     return () => window.removeEventListener('resize', updateDimensions);
   }, []);
 
+  // Cache gradients - only recreate when bounds change
+  const gradientsRef = useRef(null);
+  const lastBoundsRef = useRef(null);
+
   // Render loop
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -108,42 +112,47 @@ export function PhysicsCanvas() {
     const ctx = canvas.getContext('2d');
     let animationId;
 
-    const render = () => {
-      // Clear canvas with deep space color
-      ctx.fillStyle = COLORS.background.mid;
-      ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+    // Use constant for glow blur (already optimized in constants.js)
 
-      // Draw the Void - multi-layer gradient background
+    const render = () => {
       const bounds = getBounds();
-      if (bounds) {
-        // Outer atmosphere gradient (full canvas)
+
+      // Cache gradients (only recreate if bounds changed)
+      if (bounds && (!lastBoundsRef.current ||
+          lastBoundsRef.current.centerX !== bounds.centerX ||
+          lastBoundsRef.current.centerY !== bounds.centerY ||
+          lastBoundsRef.current.radius !== bounds.radius)) {
+
+        lastBoundsRef.current = { ...bounds };
+
         const outerGradient = ctx.createRadialGradient(
-          bounds.centerX,
-          bounds.centerY,
-          bounds.radius * 0.5,
-          bounds.centerX,
-          bounds.centerY,
-          bounds.radius * 1.5
+          bounds.centerX, bounds.centerY, bounds.radius * 0.5,
+          bounds.centerX, bounds.centerY, bounds.radius * 1.5
         );
         outerGradient.addColorStop(0, COLORS.background.mid);
         outerGradient.addColorStop(0.7, COLORS.background.edge);
         outerGradient.addColorStop(1, COLORS.background.atmosphere);
-        ctx.fillStyle = outerGradient;
-        ctx.fillRect(0, 0, dimensions.width, dimensions.height);
 
-        // Inner abyss gradient (center vignette)
         const innerGradient = ctx.createRadialGradient(
-          bounds.centerX,
-          bounds.centerY,
-          0,
-          bounds.centerX,
-          bounds.centerY,
-          bounds.radius * 0.8
+          bounds.centerX, bounds.centerY, 0,
+          bounds.centerX, bounds.centerY, bounds.radius * 0.8
         );
         innerGradient.addColorStop(0, COLORS.background.core);
         innerGradient.addColorStop(0.5, COLORS.background.mid);
         innerGradient.addColorStop(1, 'transparent');
-        ctx.fillStyle = innerGradient;
+
+        gradientsRef.current = { outerGradient, innerGradient };
+      }
+
+      // Clear and draw background
+      ctx.fillStyle = COLORS.background.mid;
+      ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+
+      if (bounds && gradientsRef.current) {
+        ctx.fillStyle = gradientsRef.current.outerGradient;
+        ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+
+        ctx.fillStyle = gradientsRef.current.innerGradient;
         ctx.fillRect(0, 0, dimensions.width, dimensions.height);
 
         // Draw boundary containment field (cyan glow)
@@ -151,7 +160,7 @@ export function PhysicsCanvas() {
         ctx.strokeStyle = COLORS.boundary.idle;
         ctx.lineWidth = 3;
         ctx.shadowColor = COLORS.boundary.idle;
-        ctx.shadowBlur = 8;
+        ctx.shadowBlur = 6;
         ctx.beginPath();
         ctx.arc(bounds.centerX, bounds.centerY, bounds.radius, 0, Math.PI * 2);
         ctx.stroke();
@@ -165,32 +174,33 @@ export function PhysicsCanvas() {
       updateTrails(marbles);
       renderTrails(ctx);
 
-      // Draw marbles with glow effect
+      // Draw marbles - BATCHED for performance
+      // First pass: all marble bodies with glow (single shadowBlur state)
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
+      ctx.shadowBlur = GLOW_BLUR;
 
-      marbles.forEach((marble) => {
+      for (let i = 0; i < marbles.length; i++) {
+        const marble = marbles[i];
         const { x, y } = marble.position;
         const coreColor = marble.plugin?.color || '#00ffff';
-        const glowColor = marble.plugin?.glowColor || coreColor;
 
-        // Outer glow aura
         ctx.shadowColor = coreColor;
-        ctx.shadowBlur = GLOW_BLUR;
-
-        // Draw marble body
+        ctx.fillStyle = coreColor;
         ctx.beginPath();
         ctx.arc(x, y, MARBLE_RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = coreColor;
         ctx.fill();
+      }
 
-        // Inner bright core
-        ctx.shadowBlur = 0;
+      // Second pass: all inner cores (no shadow)
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      for (let i = 0; i < marbles.length; i++) {
+        const { x, y } = marbles[i].position;
         ctx.beginPath();
         ctx.arc(x, y, MARBLE_RADIUS * 0.4, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
         ctx.fill();
-      });
+      }
 
       ctx.restore();
 

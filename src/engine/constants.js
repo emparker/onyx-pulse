@@ -4,7 +4,7 @@
 export const MARBLE_RADIUS = 12;
 export const MARBLE_RESTITUTION = 0.85;
 export const MARBLE_FRICTION = 0.01;
-export const MAX_MARBLES = 100;
+export const MAX_MARBLES = 50; // Reduced from 100 for performance
 export const MAX_WALLS = 10;
 export const MAX_VELOCITY = 15;
 export const BOUNDARY_SEGMENTS = 36;
@@ -22,7 +22,7 @@ export const GRAVITY_STRENGTH = 1;
 export const GRAVITY_LERP_FACTOR = 0.1;
 
 // Rendering
-export const GLOW_BLUR = 15;
+export const GLOW_BLUR = 8; // Reduced from 15 for performance
 export const TRAIL_DECAY = 0.92;
 
 // Pentatonic scale frequencies (C-Major) — THE scale (do not modify)
