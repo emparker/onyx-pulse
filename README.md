@@ -1,8 +1,23 @@
 # Onyx Pulse
 
-A generative music physics toy. Tap to create glowing marbles that bounce and make music.
+A lane-based step sequencer that makes creating electronic music effortless.
 
-**Tap once, hear beauty. No tutorials, no friction.**
+**Tap. Toggle. Groove.**
+
+---
+
+## What Is It?
+
+Onyx Pulse is a visual step sequencer with four instrument lanes:
+
+- **KICK** — Deep 808-style bass drum
+- **HAT** — Crisp hi-hat
+- **CLAP** — Snappy snare/clap
+- **BASS** — Sub bass (F-minor pentatonic)
+
+Tap cells to place triggers. A playhead sweeps across the grid at 128 BPM, playing your pattern on loop. The result: instant EDM beats without any musical knowledge required.
+
+---
 
 ## Quick Start
 
@@ -14,22 +29,33 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser and tap anywhere to begin.
+Open [http://localhost:5173](http://localhost:5173) and tap anywhere on the grid to begin.
+
+---
 
 ## Features
 
-- **Physics-driven music** — Marbles bounce in a circular arena; collisions trigger notes
-- **Pentatonic harmony** — Every note belongs to a C-major pentatonic scale, so everything sounds musical
-- **Velocity-responsive audio** — Harder collisions are louder and brighter
-- **Visual effects** — Neon glow, collision ripples, and fading marble trails
-- **Touch-friendly** — Works on desktop and mobile devices
+- **4×16 step grid** — 4 instruments, 16 steps per bar
+- **Sidechain pump** — Kick automatically ducks other instruments for that EDM feel
+- **Visual feedback** — Glowing triggers, ripple effects, breathing animations
+- **Tempo control** — Adjustable from 80-160 BPM
+- **Lane mute** — Double-tap lane label to mute/unmute
+- **Lane clear** — Long-press lane label to clear all triggers
+- **Neon noir aesthetic** — Dark theme with vibrant colored lanes
 
-## How It Works
+---
 
-1. **Tap** anywhere inside the circle to spawn a marble
-2. **Watch** as gravity pulls marbles down and they bounce off walls
-3. **Listen** as collisions create harmonious notes
-4. **Experiment** by spawning multiple marbles to create evolving soundscapes
+## Controls
+
+| Action | Gesture |
+|--------|---------|
+| Toggle trigger | Tap grid cell |
+| Mute/unmute lane | Double-tap lane label (left side) |
+| Clear lane | Long-press lane label (500ms) |
+| Play/pause | Tap center button |
+| Adjust tempo | Tap +/- buttons (top right) |
+
+---
 
 ## Tech Stack
 
@@ -37,18 +63,11 @@ Open [http://localhost:5173](http://localhost:5173) in your browser and tap anyw
 |------------|---------|
 | [Vite](https://vitejs.dev/) | Build tool and dev server |
 | [React 19](https://react.dev/) | UI framework |
-| [Matter.js](https://brm.io/matter-js/) | 2D physics engine |
 | [Tone.js](https://tonejs.github.io/) | Web audio synthesis |
+| [Canvas 2D](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API) | Custom rendering with glow effects |
 | [Tailwind CSS](https://tailwindcss.com/) | Styling |
-| [Framer Motion](https://www.framer.com/motion/) | Animations |
 
-## Scripts
-
-```bash
-npm run dev      # Start development server (http://localhost:5173)
-npm run build    # Build for production (outputs to /dist)
-npm run preview  # Preview production build locally
-```
+---
 
 ## Project Structure
 
@@ -57,49 +76,51 @@ onyx-pulse/
 ├── src/
 │   ├── main.jsx                 # Entry point
 │   ├── App.jsx                  # Root component
-│   ├── components/
-│   │   └── Canvas/
-│   │       ├── PhysicsCanvas.jsx    # Main canvas renderer
-│   │       ├── TrailLayer.jsx       # Marble trail effects
-│   │       └── GlowBurst.jsx        # Collision ripple effects
+│   ├── components/Canvas/
+│   │   ├── SequencerCanvas.jsx  # Main sequencer UI
+│   │   └── GlowBurst.jsx        # Hit effect animations
 │   ├── engine/
-│   │   ├── physics.js           # Matter.js world setup
-│   │   ├── audio.js             # Tone.js synth configuration
+│   │   ├── sequencer.js         # Grid state and playhead logic
+│   │   ├── clock.js             # Tone.js transport timing
+│   │   ├── audio.js             # Synth definitions + sidechain
 │   │   └── constants.js         # All tunable parameters
 │   ├── hooks/
-│   │   ├── usePhysicsWorld.js   # React wrapper for physics
-│   │   └── useAudioEngine.js    # React wrapper for audio
-│   ├── utils/
-│   │   └── math.js              # Utility functions
+│   │   ├── useSequencer.js      # React state integration
+│   │   └── useAudioEngine.js    # Audio lifecycle management
 │   └── styles/
 │       └── globals.css          # Global styles
 ├── docs/
-│   ├── ARCHITECTURE.md          # System design documentation
-│   └── AUDIO_SPEC.md            # Audio system specification
+│   ├── AUDIO_EDM_SPEC.md        # Audio system documentation
+│   └── archive/                 # Historical docs (original physics-based design)
 ├── index.html
 ├── vite.config.js
 ├── tailwind.config.js
 └── package.json
 ```
 
+---
+
 ## Configuration
 
 All tunable parameters live in `src/engine/constants.js`:
 
 ```javascript
-// Physics
-MARBLE_RADIUS: 12        // Size of marbles
-MARBLE_RESTITUTION: 0.85 // Bounciness (0-1)
-MAX_MARBLES: 100         // Performance limit
+// Timing
+TEMPO_BPM: 128           // Default tempo
+STEPS_PER_BAR: 16        // 16th notes per bar
+TEMPO_MIN: 80            // Minimum BPM
+TEMPO_MAX: 160           // Maximum BPM
+
+// Layout
+LANE_HEIGHT: 70          // Height of each lane
+TRIGGER_RADIUS: 12       // Size of trigger circles
+LANE_PADDING: 20         // Grid padding
 
 // Audio
-PENTATONIC_SCALE: [...]  // Note frequencies (don't modify)
-MAX_VELOCITY: 15         // Velocity ceiling for mapping
-
-// Visuals
-GLOW_BLUR: 15            // Neon glow intensity
-TRAIL_DECAY: 0.92        // Trail fade rate per frame
+F_MINOR_BASS: [...]      // Bass note scale
 ```
+
+---
 
 ## Browser Support
 
@@ -109,22 +130,20 @@ TRAIL_DECAY: 0.92        // Trail fade rate per frame
 
 **Note:** Audio requires user interaction to start due to browser autoplay policies.
 
-## Development Status
-
-| Phase | Status |
-|-------|--------|
-| Physics Foundation | Complete |
-| Audio Integration | Complete |
-| Visual Polish | Complete |
-| Interactivity (walls, gravity) | Planned |
-| Persistence & Sharing | Planned |
-| PWA & Optimization | Planned |
+---
 
 ## Documentation
 
-- [ARCHITECTURE.md](./docs/ARCHITECTURE.md) — System design and data flow
-- [AUDIO_SPEC.md](./docs/AUDIO_SPEC.md) — Audio engine specification
-- [CLAUDE.md](./CLAUDE.md) — Development guidelines
+- [CLAUDE.md](./CLAUDE.md) — Development guide and architecture
+- [docs/AUDIO_EDM_SPEC.md](./docs/AUDIO_EDM_SPEC.md) — Audio system specification
+
+---
+
+## Historical Note
+
+This project was originally designed as a physics-based marble music toy. It was migrated to a lane-based step sequencer for better timing predictability and clearer user mental model. Original design documents are preserved in `docs/archive/`.
+
+---
 
 ## License
 

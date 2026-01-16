@@ -1,7 +1,7 @@
 # CLAUDE.md — Onyx Pulse Development Guide
 
-> **Project:** Onyx Pulse — A generative music physics toy  
-> **Stack:** Vite + React 19 · Matter.js · Tone.js · Tailwind CSS · Framer Motion
+> **Project:** Onyx Pulse — A lane-based step sequencer music toy
+> **Stack:** Vite + React 19 · Tone.js · Canvas 2D · Tailwind CSS
 
 ---
 
@@ -13,108 +13,203 @@ When in doubt, ask: "Does this make the first 5 seconds more magical?"
 
 ---
 
-## 2. Project Structure (Strict)
+## 2. Project Structure
 
 ```
 onyx-pulse/
 ├── src/
-│   ├── main.jsx                 # Entry point (Tone.js context init)
-│   ├── App.jsx                  # Root layout, state orchestration
+│   ├── main.jsx                 # Entry point
+│   ├── App.jsx                  # Root layout
 │   ├── components/
-│   │   ├── Canvas/
-│   │   │   ├── PhysicsCanvas.jsx    # Matter.js renderer + glow effects
-│   │   │   ├── TrailLayer.jsx       # Marble trail decay logic
-│   │   │   └── GlowBurst.jsx        # Collision ripple animation
-│   │   ├── Controls/
-│   │   │   ├── WallDrawer.jsx       # Touch/mouse wall creation
-│   │   │   └── GravityController.jsx # Device orientation handler
-│   │   └── UI/
-│   │       ├── RecordButton.jsx
-│   │       └── ShareButton.jsx
+│   │   └── Canvas/
+│   │       ├── SequencerCanvas.jsx  # Main sequencer UI + rendering
+│   │       └── GlowBurst.jsx        # Hit effect animation
 │   ├── engine/
-│   │   ├── physics.js           # Matter.js world setup + collision events
-│   │   ├── audio.js             # Tone.js synth + scale mapping
+│   │   ├── sequencer.js         # Grid state, playhead, mute/unlock logic
+│   │   ├── clock.js             # Tone.js transport, tempo control
+│   │   ├── audio.js             # Synths (kick, hat, clap, bass) + sidechain
 │   │   └── constants.js         # All magic numbers live HERE
 │   ├── hooks/
-│   │   ├── usePhysicsWorld.js   # React wrapper for Matter.Engine
-│   │   ├── useAudioEngine.js    # Tone.js lifecycle management
-│   │   └── useDeviceMotion.js   # Accelerometer abstraction
+│   │   ├── useSequencer.js      # React wrapper for sequencer state
+│   │   └── useAudioEngine.js    # Tone.js lifecycle management
 │   ├── utils/
-│   │   ├── math.js              # clamp, lerp, mapRange
-│   │   └── serialize.js         # State → Base64 URL encoding
+│   │   └── math.js              # clamp, lerp, mapRange
 │   └── styles/
 │       └── globals.css          # Tailwind base + custom glow vars
 ├── public/
 │   └── manifest.json            # PWA config
+├── docs/
+│   ├── AUDIO_EDM_SPEC.md        # Audio system documentation
+│   └── archive/                 # Historical docs (physics-based version)
 ├── index.html
 ├── vite.config.js
 ├── tailwind.config.js
-├── package.json
-└── docs/
-    ├── ARCHITECTURE.md
-    └── AUDIO_SPEC.md
+└── package.json
 ```
-
-**Rule:** Never create files outside this structure without explicit approval.
 
 ---
 
-## 3. Immutable Constraints
+## 3. Architecture Overview
 
-### 3.1 Audio Engine Rules
+### Sequencer Model
 
-| Rule | Rationale |
-|------|-----------|
-| **Initialize Tone.js ONLY on first user gesture** | Browser autoplay policies block audio until interaction |
-| **Use `Tone.start()` inside a click/tap handler** | Required for iOS Safari and Chrome |
-| **Never exceed 32 simultaneous voices** | CPU protection; use voice stealing |
-| **All frequencies from `constants.js`** | Pentatonic scale is sacred — no accidentals |
+```
+User Tap on Grid
+       ↓
+Toggle Cell (lane + step)
+       ↓
+Clock Tick (16th notes at 128 BPM)
+       ↓
+Check Grid → Trigger Sounds (perfect timing)
+       ↓
+Visual Feedback (flash, ripple, playhead trail)
+```
+
+### Mental Model
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  STEP:   1   2   3   4   5   6   7   8   ... 16            │
+│  ────────────────────────────────────────────────           │
+│  KICK:   ●   ○   ○   ○   ●   ○   ○   ○   ... ○    ← tap to │
+│  HAT:    ●   ○   ●   ○   ●   ○   ●   ○   ... ○      toggle │
+│  CLAP:   ○   ○   ○   ○   ●   ○   ○   ○   ... ○             │
+│  BASS:   ●   ○   ○   ●   ○   ○   ●   ○   ... ○             │
+│          ▲                                                  │
+│          └── playhead (moves right, loops)                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 4. Core Modules
+
+### 4.1 Sequencer Engine (`src/engine/sequencer.js`)
+
+Manages grid state, playhead position, mute/unlock status.
+
+**Key exports:**
+- `initSequencer()` — Initialize empty 4×16 grid
+- `toggleStep(lane, step)` — Toggle trigger on/off
+- `getGrid()` / `getPlayhead()` — State getters
+- `toggleMute(lane)` — Mute/unmute a lane
+- `clearLane(lane)` — Clear all triggers in a lane
+
+### 4.2 Clock (`src/engine/clock.js`)
+
+Tone.js Transport wrapper for timing.
+
+**Key exports:**
+- `initClock()` — Start transport at 128 BPM
+- `onStep(callback)` — Subscribe to 16th note events
+- `getTempo()` / `setTempo(bpm)` — Tempo control (80-160 BPM)
+- `togglePlayPause()` — Play/pause transport
+
+### 4.3 Audio Engine (`src/engine/audio.js`)
+
+Four synthesizers with sidechain compression.
+
+| Instrument | Synth Type | Character |
+|------------|------------|-----------|
+| **KICK** | MembraneSynth | Deep 808-style thump |
+| **HAT** | NoiseSynth + HP filter | Crisp hi-hat tick |
+| **CLAP** | NoiseSynth + BP filter | Snare-like burst |
+| **BASS** | MonoSynth | Sub bass (F-minor pentatonic) |
+
+**Sidechain:** When kick fires, other instruments duck via gain automation.
+
+### 4.4 Constants (`src/engine/constants.js`)
+
+All magic numbers in one place:
 
 ```javascript
-// constants.js — THE scale (do not modify)
-export const PENTATONIC_SCALE = [
-  261.63,  // C4
-  293.66,  // D4
-  329.63,  // E4
-  392.00,  // G4
-  440.00,  // A4
-  523.25,  // C5
-  587.33,  // D5
-  659.25,  // E5
-];
+// Timing
+TEMPO_BPM = 128
+STEPS_PER_BAR = 16
+TEMPO_MIN = 80
+TEMPO_MAX = 160
+
+// Layout
+LANE_HEIGHT = 70
+TRIGGER_RADIUS = 12
+LANE_PADDING = 20
+PLAYHEAD_WIDTH = 4
+
+// Lanes
+LANE_ORDER = ['kick', 'hat', 'clap', 'bass']
+LANES = { kick: {...}, hat: {...}, clap: {...}, bass: {...} }
+
+// Scale
+F_MINOR_BASS = ['F2', 'Ab2', 'Bb2', 'C3', 'Eb3']
 ```
-
-### 3.2 Physics Engine Rules
-
-| Rule | Rationale |
-|------|-----------|
-| **Matter.Engine.update() in rAF loop only** | Never in React render cycle |
-| **Max 100 bodies in world** | Performance ceiling; oldest marbles despawn |
-| **Restitution: 0.85** | Bouncy but not chaotic |
-| **Friction: 0.01** | Marbles should feel "slick" |
-| **Boundary is a composite of static arc segments** | Circle approximation via 36 segments |
-
-### 3.3 Rendering Rules
-
-| Rule | Rationale |
-|------|-----------|
-| **Canvas 2D only** (no WebGL for MVP) | Simpler debugging, sufficient perf |
-| **Use `globalCompositeOperation: 'lighter'`** | Additive blending for neon glow |
-| **shadowBlur ≤ 20px** | Performance; higher values tank FPS |
-| **Trail decay: 0.92 alpha per frame** | Persist ~50 frames visually |
 
 ---
 
-## 4. Development Commands
+## 5. User Interactions
+
+### Grid Interactions (SequencerCanvas)
+
+| Gesture | Target | Action |
+|---------|--------|--------|
+| Tap | Grid cell | Toggle trigger on/off |
+| Double-tap | Lane header (left 60px) | Toggle mute |
+| Long-press (500ms) | Lane header | Clear all triggers in lane |
+
+### UI Controls
+
+| Control | Location | Action |
+|---------|----------|--------|
+| Play/Pause | Bottom center | Toggle clock |
+| Tempo +/- | Top right | Adjust BPM (±4) |
+
+---
+
+## 6. Visual Effects
+
+### Implemented Effects
+
+| Effect | Description | Implementation |
+|--------|-------------|----------------|
+| **Breathing** | Lanes/triggers pulse gently | Sine wave on `breathePhaseRef` |
+| **Hit Flash** | Triggers flash white when hit | `hitFlashRef` with decay |
+| **Ripple** | Expanding rings on hit | `rippleRef` array with radius growth |
+| **Sidechain Pump** | Non-kick lanes dim on kick | `sidechainRef` from audio engine |
+| **Playhead Trail** | Fading trail behind playhead | `playheadTrailRef` array |
+| **Downbeat Pulse** | Background brightens on beat 1 | `downbeatPulseRef` |
+| **Mute Overlay** | Dimmed lane with `[M]` prefix | Alpha overlay + label change |
+
+### Color Palette ("Neon Noir")
+
+```javascript
+COLORS = {
+  background: { core: '#030308', mid: '#050510', edge: '#0a1628' },
+  playhead: { line: '#ffffff', glow: '#00ffff' },
+  // Lane colors defined in LANES constant
+}
+
+// Lane colors:
+kick: '#f97316' (orange)
+hat:  '#00ffff' (cyan)
+clap: '#f8fafc' (white)
+bass: '#a855f7' (purple)
+```
+
+---
+
+## 7. Audio Engine Rules
+
+| Rule | Rationale |
+|------|-----------|
+| **Initialize Tone.js ONLY on first user gesture** | Browser autoplay policies |
+| **Use `Tone.start()` inside tap handler** | Required for iOS Safari |
+| **Sidechain on kick only** | Creates the "pump" feel |
+| **Bass cycles through F-minor pentatonic** | Always sounds musical |
+
+---
+
+## 8. Development Commands
 
 ```bash
-# Initial setup
-npm create vite@latest onyx-pulse -- --template react
-cd onyx-pulse
-npm install matter-js tone framer-motion
-npm install -D tailwindcss postcss autoprefixer
-npx tailwindcss init -p
-
 # Development
 npm run dev          # Vite dev server (port 5173)
 
@@ -125,206 +220,110 @@ npm run preview      # Test production build locally
 
 ---
 
-## 5. Implementation Checklist (By Day)
-
-### Day 1: Physics Foundation
-- [ ] Vite + React scaffold complete
-- [ ] Matter.js world with circular boundary (36-segment polygon)
-- [ ] Tap anywhere → spawn marble at touch point
-- [ ] Marbles have slight random x-velocity variance (±2)
-- [ ] Boundary collision detection working
-- [ ] Console logs collision events (verify before audio)
-
-**Exit Criteria:** 10 marbles bouncing smoothly at 60fps
-
-### Day 2: Audio Integration
-- [ ] Tone.js PolySynth initialized on first tap
-- [ ] Collision → frequency mapping via impact energy
-- [ ] Gain scales with collision velocity (0.1–1.0)
-- [ ] Filter cutoff responds to velocity (200Hz–2000Hz)
-- [ ] No audio pops or clicks on rapid collisions
-
-**Exit Criteria:** Collisions produce harmonious, velocity-responsive tones
-
-### Day 3: Visual Polish
-- [ ] Neon glow on marbles (cyan/magenta palette)
-- [ ] Collision ripple effect (expanding ring, fade out)
-- [ ] Marble trails with exponential decay
-- [ ] Dark background (#0a0a0f) with subtle radial gradient
-
-**Exit Criteria:** Screenshot looks like concept art
-
-### Day 4: Interactivity
-- [ ] Wall drawing: touch-drag creates static segments
-- [ ] Wall limit: max 10 user walls
-- [ ] Double-tap wall to delete
-- [ ] Accelerometer gravity (with fallback for desktop)
-- [ ] Smooth gravity transitions (lerp, not snap)
-
-**Exit Criteria:** User can trap marbles in custom shapes
-
-### Day 5: Persistence & Sharing (DEFERRED)
-> **Status:** Deferred. Implementation design documented in `docs/FUTURE_FEATURES.md`
-
-Features planned but not yet implemented:
-- State serialization to Base64 URL
-- URL parsing on load → restore state
-- Tone.Recorder integration
-- Export as .webm audio file
-
-**Exit Criteria:** Shareable links produce identical playback
-
-### Day 6: Optimization
-- [ ] Performance profiling (Chrome DevTools)
-- [ ] 60fps with 50 marbles + 10 walls verified
-- [ ] Memory leak audit (no orphaned bodies)
-- [ ] PWA manifest + service worker
-- [ ] Touch responsiveness < 16ms
-
-**Exit Criteria:** Lighthouse PWA score ≥ 90
-
-### Day 7: Ship It
-- [ ] Vercel deployment
-- [ ] Mobile testing (iOS Safari, Android Chrome)
-- [ ] OG image + meta tags for social sharing
-- [ ] Final README.md
-
----
-
-## 6. Code Style Mandates
+## 9. Code Style
 
 ### React Components
+
 ```jsx
 // ✅ Correct: Functional, hooks at top, early returns
-export function PhysicsCanvas({ onCollision }) {
+export function SequencerCanvas() {
   const canvasRef = useRef(null);
-  const engine = usePhysicsWorld();
+  const { grid, playhead, toggleStep } = useSequencer();
 
-  if (!engine) return null;
+  if (!grid) return null;
 
   return <canvas ref={canvasRef} />;
 }
-
-// ❌ Wrong: Class components, inline styles, business logic in JSX
 ```
 
 ### State Management
-- **Local state only** — No Redux, Zustand, or context for MVP
-- Physics world state lives in `useRef`, not `useState`
-- Audio engine is a singleton module, not React state
 
-### Event Handling
-```javascript
-// ✅ Correct: Throttled, passive listeners
-canvas.addEventListener('touchmove', handleDraw, { passive: true });
+- **Local state only** — No Redux/Zustand
+- Sequencer/audio state in singleton modules
+- React state for UI reactivity via hooks
 
-// ❌ Wrong: Unthrottled mousemove, missing passive flag
-```
+### Animation
 
-### Error Handling
-```javascript
-// ✅ Correct: Graceful degradation
-const motionSupported = 'DeviceOrientationEvent' in window;
-if (!motionSupported) {
-  console.info('Motion controls unavailable, using mouse fallback');
-}
-
-// ❌ Wrong: Crashing on missing API
-```
+- Use `requestAnimationFrame` exclusively
+- Decay-based animations (multiply by 0.85-0.95 per frame)
+- Never use `setInterval` for visuals
 
 ---
 
-## 7. Forbidden Patterns
+## 10. Testing Protocol
 
-| Anti-Pattern | Why It's Banned |
-|--------------|-----------------|
-| `setInterval` for animation | Use `requestAnimationFrame` exclusively |
-| Audio files / samples | Synthesis only (bundle size, licensing) |
-| npm packages > 50kb | Bundle bloat; find lighter alternatives |
-| `!important` in CSS | Specificity wars destroy maintainability |
-| `any` type if using TS | Defeats the purpose |
-| `console.log` in production | Use structured logging or remove |
-| Synchronous localStorage | Blocks main thread; use async if needed |
+Before any commit:
 
----
-
-## 8. Testing Requirements
-
-### Manual Testing Protocol
-Before any PR/commit:
-1. Fresh browser (incognito) — verify audio starts on first tap
-2. Spam-tap 50 marbles — no frame drops
-3. Draw 10 walls — no input lag
-4. Leave running 5 min — no memory growth
-5. Test on throttled CPU (4x slowdown)
-
-### Automated (Stretch Goal)
-- Vitest for utility functions (`math.js`, `serialize.js`)
-- No E2E for MVP (audio testing is brittle)
+1. **Fresh browser** — Audio starts on first tap
+2. **All 4 lanes** — Visible and interactive
+3. **Double-tap mute** — Toggles on/off correctly
+4. **Long-press clear** — Clears lane triggers
+5. **Tempo control** — +/- buttons work (80-160 range)
+6. **60fps** — Smooth playhead, no stuttering
+7. **Mobile** — Touch interactions work
 
 ---
 
-## 9. Git Workflow
-
-```bash
-# Branch naming
-feature/day-1-physics
-feature/day-2-audio
-fix/collision-detection-edge-case
-
-# Commit format
-feat(physics): implement circular boundary collision
-fix(audio): prevent click on rapid note triggers
-perf(canvas): reduce trail render overhead
-```
-
-**Rule:** Atomic commits. One feature/fix per commit.
-
----
-
-## 10. Emergency Procedures
+## 11. Troubleshooting
 
 ### "Audio Won't Start"
-1. Check: Is `Tone.start()` inside a user gesture handler?
-2. Check: Is there a `await Tone.loaded()` before playing?
-3. Check: iOS requires unmuting: `Tone.context.resume()`
+1. Check: Is `Tone.start()` inside user gesture handler?
+2. Check: Is `ensureAudioReady()` called before playback?
+3. iOS: Ensure audio context resumes: `Tone.context.resume()`
 
-### "Physics Exploding"
-1. Check: Is `timeScale` set to 1.0?
-2. Check: Are bodies spawning inside other bodies?
-3. Fix: Add spawn position validation
+### "Lanes Not Showing"
+1. Check: `unlockedLanes` state in sequencer.js
+2. Check: `unlockProgress` in render loop (should be > 0.01)
 
-### "Canvas Blank"
-1. Check: Is `canvas.getContext('2d')` returning null?
-2. Check: Is canvas size set (not 0x0)?
-3. Check: Is the render loop actually running?
+### "Mute Not Toggling"
+1. Check browser console for double-tap detection logs
+2. Verify tap is within header area (left 60px of lane)
 
-### "Mobile Performance Tank"
-1. Reduce `shadowBlur` to 10
-2. Cap marbles at 30
-3. Disable trails on low-end devices (check `navigator.hardwareConcurrency`)
+### "Performance Issues"
+1. Reduce `shadowBlur` in constants
+2. Check for memory leaks (ripples/trails not cleaning up)
+3. Profile with Chrome DevTools
 
 ---
 
-## 11. Reference Links
+## 12. Reference Links
 
-- [Matter.js Docs](https://brm.io/matter-js/docs/)
 - [Tone.js Docs](https://tonejs.github.io/)
 - [Vite Config Reference](https://vitejs.dev/config/)
-- [Framer Motion](https://www.framer.com/motion/)
+- [Canvas 2D API](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API)
 
 ---
 
-## 12. Definition of Done
+## 13. Definition of Done
 
 The project is complete when:
-- [ ] A non-technical user can create music in < 5 seconds
-- [ ] Works offline (PWA)
-- [ ] Shareable via URL
-- [ ] 60fps on iPhone 12 / Pixel 6 equivalent
+
+- [x] 4-lane step sequencer working
+- [x] Tap to toggle triggers
+- [x] Playhead loops at 128 BPM (adjustable 80-160)
+- [x] Kick, hat, clap, bass sounds distinct
+- [x] Sidechain pump on kick
+- [x] Visual feedback (flash, ripple, breathing)
+- [x] Mute/clear lane gestures
+- [x] Tempo control UI
+- [ ] 60fps on mobile
+- [ ] PWA offline support
 - [ ] Zero console errors in production
-- [ ] Generates genuine "wow" reaction on first use
 
 ---
 
-*Last Updated: Project Kickoff*
+## 14. Historical Context
+
+This project was originally designed as a physics-based marble toy (see `docs/archive/`).
+It was migrated to a lane-based step sequencer for:
+
+- **Predictable timing** — Music plays exactly on beat
+- **Simpler mental model** — Clear grid instead of chaotic physics
+- **Reduced complexity** — ~73% less code (no Matter.js)
+- **Better UX** — Intentional patterns vs random collisions
+
+The archived docs preserve the original vision for reference.
+
+---
+
+*Last Updated: January 2026 (Post-Sequencer Migration)*

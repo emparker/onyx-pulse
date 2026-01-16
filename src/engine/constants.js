@@ -1,44 +1,68 @@
 // All magic numbers live HERE — do not scatter throughout codebase
 
-// === PHYSICS ===
-export const MARBLE_RADIUS = 12;
-export const MARBLE_RESTITUTION = 0.85;
-export const MARBLE_FRICTION = 0.01;
-export const MAX_MARBLES = 50; // Reduced from 100 for performance
-export const MAX_WALLS = 10;
+// === TEMPO / CLOCK ===
+export const TEMPO_BPM = 128;
+export const STEPS_PER_BAR = 16; // 16th notes per bar
+export const BEATS_PER_BAR = 4;
+
+// === SEQUENCER LAYOUT ===
+export const LANE_HEIGHT = 70;      // Height of each lane in pixels
+export const STEP_WIDTH = 0;        // 0 = auto-calculate based on screen width
+export const PLAYHEAD_WIDTH = 4;    // Width of playhead line
+export const TRIGGER_RADIUS = 12;   // Radius of trigger circles
+export const LANE_PADDING = 20;     // Padding around lanes
+
+// === LANE CONFIGURATION ===
+export const LANES = {
+  kick: {
+    name: 'KICK',
+    color: { core: '#f97316', glow: '#7c2d12' },
+    synth: 'kick',
+  },
+  hat: {
+    name: 'HAT',
+    color: { core: '#00ffff', glow: '#0a3d4a' },
+    synth: 'hat',
+  },
+  clap: {
+    name: 'CLAP',
+    color: { core: '#f8fafc', glow: '#64748b' },
+    synth: 'clap',
+  },
+  bass: {
+    name: 'BASS',
+    color: { core: '#a855f7', glow: '#581c87' },
+    synth: 'bass',
+  },
+};
+
+// Order lanes appear (top to bottom)
+export const LANE_ORDER = ['kick', 'hat', 'clap', 'bass'];
+
+// Progressive unlock thresholds (number of triggers to unlock each lane)
+export const UNLOCK_THRESHOLDS = {
+  kick: 0,   // Always unlocked
+  hat: 4,    // Unlock after 4 triggers
+  clap: 8,   // Unlock after 8 triggers
+  bass: 12,  // Unlock after 12 triggers
+};
+
+// Tempo range
+export const TEMPO_MIN = 80;
+export const TEMPO_MAX = 160;
+export const TEMPO_STEP = 4;
+
+// === RENDERING ===
+export const GLOW_BLUR = 8;
+
+// === AUDIO ===
+// F-Minor Pentatonic scale for bass notes
+export const F_MINOR_BASS = ['F2', 'Ab2', 'Bb2', 'C3', 'Eb3'];
+
+// Max velocity for audio calculations
 export const MAX_VELOCITY = 15;
-export const BOUNDARY_SEGMENTS = 36;
-export const BOUNDARY_THICKNESS = 40;
-export const SPAWN_VELOCITY_VARIANCE = 2;
-
-// Walls - physics body is thick for collision, visual is thin
-export const WALL_PHYSICS_THICKNESS = 24;
-export const WALL_VISUAL_THICKNESS = 4;
-export const WALL_MIN_LENGTH = 30;
-export const WALL_RESTITUTION = 0.9;
-
-// Gravity
-export const GRAVITY_STRENGTH = 1;
-export const GRAVITY_LERP_FACTOR = 0.1;
-
-// Rendering
-export const GLOW_BLUR = 8; // Reduced from 15 for performance
-export const TRAIL_DECAY = 0.92;
-
-// Pentatonic scale frequencies (C-Major) — THE scale (do not modify)
-export const PENTATONIC_SCALE = [
-  261.63,  // C4
-  293.66,  // D4
-  329.63,  // E4
-  392.00,  // G4
-  440.00,  // A4
-  523.25,  // C5
-  587.33,  // D5
-  659.25,  // E5
-];
 
 // === COLOR SYSTEM — "Neon Noir" ===
-
 export const COLORS = {
   // === WORLD (The Void) ===
   background: {
@@ -48,61 +72,36 @@ export const COLORS = {
     atmosphere: '#061018', // Faint ambient haze
   },
 
-  boundary: {
-    idle: '#0a3d4a',      // Dim cyan - containment field
-    pulse: '#0f5266',     // Muted teal - subtle pulse
-    flash: '#00d4ff',     // Bright cyan - collision
+  // === PLAYHEAD ===
+  playhead: {
+    line: '#ffffff',
+    glow: '#00ffff',
+    trail: 'rgba(0, 255, 255, 0.3)',
   },
 
-  // === MARBLES ===
-  marble: {
-    cyan:       { core: '#00ffff', glow: '#0a3d4a' },
-    indigo:     { core: '#6366f1', glow: '#312e81' },
-    chartreuse: { core: '#a3e635', glow: '#3f6212' },
-    orange:     { core: '#f97316', glow: '#7c2d12' },
+  // === GRID ===
+  grid: {
+    line: 'rgba(255, 255, 255, 0.1)',      // Vertical step dividers
+    beatLine: 'rgba(255, 255, 255, 0.2)',  // Quarter note dividers
+    laneDivider: 'rgba(255, 255, 255, 0.15)', // Horizontal lane dividers
   },
 
-  // Velocity-based color mapping (slow → fast)
-  marbleByVelocity: ['#6366f1', '#00ffff', '#a3e635', '#f97316'],
-
-  // === WALLS (Force Fields) ===
-  wall: {
-    preview: '#ffffff',   // Ghost white during drawing
-    previewOpacity: 0.35, // 35% opacity for preview
-    placed: '#94a3b8',    // Steel blue - structural
-    glow: '#475569',      // Subtle glow
-    flash: '#f8fafc',     // Bright white - collision
+  // === TRIGGERS ===
+  trigger: {
+    inactive: 'rgba(255, 255, 255, 0.15)', // Empty step
+    active: null, // Uses lane color
+    hit: '#ffffff', // Flash when played
   },
 
   // === EFFECTS ===
   burst: {
     core: '#ffffff',
-    boundary: '#00ffff',  // Marble ↔ Boundary
-    wall: '#f8fafc',      // Marble ↔ Wall
-    // Marble ↔ Marble uses blend of both marble colors
-  },
-
-  trail: {
-    opacityFresh: 0.4,
-    opacityMid: 0.2,
-    opacityOld: 0.08,
   },
 
   // === UI ===
   ui: {
     textPrimary: '#e2e8f0',
     textSecondary: '#94a3b8',
-    iconIdle: '#64748b',
-    iconActive: '#fbbf24',
-    recording: '#ef4444',
-    success: '#22c55e',
+    laneName: 'rgba(255, 255, 255, 0.6)',
   },
 };
-
-// Convenience exports for marble colors (array for random selection)
-export const MARBLE_COLORS = [
-  COLORS.marble.cyan,
-  COLORS.marble.indigo,
-  COLORS.marble.chartreuse,
-  COLORS.marble.orange,
-];

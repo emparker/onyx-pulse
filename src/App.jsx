@@ -1,9 +1,9 @@
-import { PhysicsCanvas } from './components/Canvas/PhysicsCanvas.jsx';
+import { SequencerCanvas } from './components/Canvas/SequencerCanvas.jsx';
 
 export default function App() {
   return (
     <div className="w-full h-full">
-      <PhysicsCanvas />
+      <SequencerCanvas />
     </div>
   );
 }
