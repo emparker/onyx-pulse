@@ -1,6 +1,6 @@
 # CLAUDE.md — Onyx Pulse Development Guide
 
-> **Project:** Onyx Pulse — A lane-based step sequencer music toy
+> **Project:** Onyx Pulse — A pocket-sized EDM creation toy
 > **Stack:** Vite + React 19 · Tone.js · Canvas 2D · Tailwind CSS
 
 ---
@@ -9,7 +9,14 @@
 
 **Every decision must serve the core UX promise:** *Tap once, hear beauty. No tutorials, no friction.*
 
-When in doubt, ask: "Does this make the first 5 seconds more magical?"
+**The Test:** If someone can't create something they'd genuinely nod their head to within 30 seconds of first open — we've failed.
+
+### Core Principles
+1. **Instant gratification** — First touch = music. No tutorials.
+2. **Impossible to sound bad** — Every combination bangs. All content locked to C minor.
+3. **Disposable creations** — Clear + restart = satisfying. No save anxiety.
+4. **Endless novelty** — Pattern cycling ensures every session is different.
+5. **Tinkering over composing** — A toy that outputs music, not a simple DAW.
 
 ---
 
@@ -25,9 +32,9 @@ onyx-pulse/
 │   │       ├── SequencerCanvas.jsx  # Main sequencer UI + rendering
 │   │       └── GlowBurst.jsx        # Hit effect animation
 │   ├── engine/
-│   │   ├── sequencer.js         # Grid state, playhead, mute/unlock logic
+│   │   ├── sequencer.js         # Grid state, pattern state, categories
 │   │   ├── clock.js             # Tone.js transport, tempo control
-│   │   ├── audio.js             # Synths (kick, hat, clap, bass) + sidechain
+│   │   ├── audio.js             # All synths + stabs + build/drop
 │   │   └── constants.js         # All magic numbers live HERE
 │   ├── hooks/
 │   │   ├── useSequencer.js      # React wrapper for sequencer state
@@ -51,34 +58,41 @@ onyx-pulse/
 
 ## 3. Architecture Overview
 
-### Sequencer Model
-
-```
-User Tap on Grid
-       ↓
-Toggle Cell (lane + step)
-       ↓
-Clock Tick (16th notes at 128 BPM)
-       ↓
-Check Grid → Trigger Sounds (perfect timing)
-       ↓
-Visual Feedback (flash, ripple, playhead trail)
-```
-
-### Mental Model
+### Visual Layout
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  STEP:   1   2   3   4   5   6   7   8   ... 16            │
-│  ────────────────────────────────────────────────           │
-│  KICK:   ●   ○   ○   ○   ●   ○   ○   ○   ... ○    ← tap to │
-│  HAT:    ●   ○   ●   ○   ●   ○   ●   ○   ... ○      toggle │
-│  CLAP:   ○   ○   ○   ○   ●   ○   ○   ○   ... ○             │
-│  BASS:   ●   ○   ○   ●   ○   ○   ●   ○   ... ○             │
+│  [DRUMS]        [BASS]        [MELODIC]    ← Category tabs │
+├─────────────────────────────────────────────────────────────┤
+│  TENSION ═══════════●═══════════════════════════ [DROP]    │
+├─────────────────────────────────────────────────────────────┤
+│   KICK  ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○   ← Grid lanes   │
+│   HAT   ● ○ ● ○ ● ○ ● ○ ● ○ ● ○ ● ○ ● ○                   │
+│   CLAP  ○ ○ ○ ○ ● ○ ○ ○ ○ ○ ○ ○ ● ○ ○ ○                   │
+│   PERC  ○ ○ ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○ ● ○                   │
 │          ▲                                                  │
-│          └── playhead (moves right, loops)                  │
+│          └── playhead (moves right, loops)      [128 BPM]  │
+├─────────────────────────────────────────────────────────────┤
+│ [ZAP] [IMPACT] [VOCAL] [RISER]          ← Stab buttons    │
+│                    [▶/❚❚]                ← Play/Pause      │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Lane Types
+
+| Type | Lanes | Interaction |
+|------|-------|-------------|
+| **Grid** | kick, hat, clap, perc, sub | 16-step tap-to-toggle |
+| **Pattern** | wobble, lead, chord, arp | Tap to cycle pre-made patterns |
+| **Stab** | zap, impact, vocal, riser | One-shot buttons (not sequenced) |
+
+### Category Tabs
+
+| Category | Lanes |
+|----------|-------|
+| **DRUMS** | kick, hat, clap, perc |
+| **BASS** | sub, wobble |
+| **MELODIC** | chord, lead, arp |
 
 ---
 
@@ -86,14 +100,17 @@ Visual Feedback (flash, ripple, playhead trail)
 
 ### 4.1 Sequencer Engine (`src/engine/sequencer.js`)
 
-Manages grid state, playhead position, mute/unlock status.
+Manages grid state, pattern state, categories, and lane activation.
 
 **Key exports:**
-- `initSequencer()` — Initialize empty 4×16 grid
-- `toggleStep(lane, step)` — Toggle trigger on/off
+- `initSequencer()` — Initialize grid for all lanes
+- `toggleStep(lane, step)` — Toggle trigger on/off (grid lanes)
+- `cyclePattern(lane)` — Cycle to next pattern (pattern lanes)
+- `toggleActive(lane)` — Enable/disable a pattern lane
 - `getGrid()` / `getPlayhead()` — State getters
 - `toggleMute(lane)` — Mute/unmute a lane
 - `clearLane(lane)` — Clear all triggers in a lane
+- `getCurrentCategory()` / `setCurrentCategory()` — Category navigation
 
 ### 4.2 Clock (`src/engine/clock.js`)
 
@@ -107,14 +124,41 @@ Tone.js Transport wrapper for timing.
 
 ### 4.3 Audio Engine (`src/engine/audio.js`)
 
-Four synthesizers with sidechain compression.
+Nine synthesizers + four stabs + build/drop system.
+
+#### Grid Lane Synths
 
 | Instrument | Synth Type | Character |
 |------------|------------|-----------|
 | **KICK** | MembraneSynth | Deep 808-style thump |
 | **HAT** | NoiseSynth + HP filter | Crisp hi-hat tick |
 | **CLAP** | NoiseSynth + BP filter | Snare-like burst |
-| **BASS** | MonoSynth | Sub bass (F-minor pentatonic) |
+| **PERC** | MembraneSynth | Tuned percussion (cycles F3, C3, G3, D3) |
+| **SUB** | MonoSynth | Sub bass (C-minor pentatonic cycle) |
+
+#### Pattern Lane Synths
+
+| Instrument | Synth Type | Patterns |
+|------------|------------|----------|
+| **WOBBLE** | MonoSynth + LFO | 1/4, 1/8, 1/16 rates |
+| **CHORD** | PolySynth | i-VI-III-VII, i-VII-VI-VII, i-i-VI-VII |
+| **LEAD** | MonoSynth | Hook 1, Hook 2, Hook 3 |
+| **ARP** | MonoSynth | Up, Down, Random (Cm7 arpeggio) |
+
+#### Stab FX
+
+| Stab | Sound |
+|------|-------|
+| **ZAP** | FM synth laser zap |
+| **IMPACT** | Pink noise sweep + membrane thump |
+| **VOCAL** | Formant-like filter sweep |
+| **RISER** | White noise with 2-bar filter sweep |
+
+#### Build/Drop System
+
+- **Tension slider (0-100%):** Controls master highpass filter (20Hz → 2kHz)
+- **Snare roll:** Auto-triggers at thresholds (40%=1/8, 65%=1/16, 85%=1/32)
+- **DROP button:** Resets filter, stops roll, plays impact
 
 **Sidechain:** When kick fires, other instruments duck via gain automation.
 
@@ -130,37 +174,71 @@ TEMPO_MIN = 80
 TEMPO_MAX = 160
 
 // Layout
-LANE_HEIGHT = 70
-TRIGGER_RADIUS = 12
+LANE_HEIGHT = 55
+TRIGGER_RADIUS = 10
 LANE_PADDING = 20
-PLAYHEAD_WIDTH = 4
+HEADER_WIDTH = 60
+STAB_BAR_HEIGHT = 70
 
-// Lanes
-LANE_ORDER = ['kick', 'hat', 'clap', 'bass']
-LANES = { kick: {...}, hat: {...}, clap: {...}, bass: {...} }
+// Categories
+CATEGORIES = { drums, bass, melodic }
+CATEGORY_ORDER = ['drums', 'bass', 'melodic']
+LANES_BY_CATEGORY = {
+  drums: ['kick', 'hat', 'clap', 'perc'],
+  bass: ['sub', 'wobble'],
+  melodic: ['chord', 'lead', 'arp']
+}
 
-// Scale
-F_MINOR_BASS = ['F2', 'Ab2', 'Bb2', 'C3', 'Eb3']
+// Lane Types
+GRID_LANES = ['kick', 'hat', 'clap', 'perc', 'sub']
+PATTERN_LANES = ['wobble', 'chord', 'lead', 'arp']
+
+// Scale (C Minor)
+C_MINOR_BASS = ['C2', 'Eb2', 'F2', 'G2', 'Bb2']
+ARP_NOTES = ['C3', 'Eb3', 'G3', 'Bb3', 'C4']
+
+// Stabs
+STAB_ORDER = ['zap', 'impact', 'vocal', 'riser']
+
+// Build/Drop
+BUILD_DROP = {
+  filterMinHz: 20,
+  filterMaxHz: 2000,
+  kickMuteThreshold: 75,
+  snareRollThresholds: { 0: null, 40: '8n', 65: '16n', 85: '32n' }
+}
 ```
 
 ---
 
 ## 5. User Interactions
 
-### Grid Interactions (SequencerCanvas)
+### Grid Lane Interactions
 
 | Gesture | Target | Action |
 |---------|--------|--------|
 | Tap | Grid cell | Toggle trigger on/off |
-| Double-tap | Lane header (left 60px) | Toggle mute |
-| Long-press (500ms) | Lane header | Clear all triggers in lane |
+| Double-tap | Lane header | Toggle mute |
+| Long-press (500ms) | Lane header | Clear all triggers |
+
+### Pattern Lane Interactions
+
+| Gesture | Target | Action |
+|---------|--------|--------|
+| Tap | Pattern lane area | Cycle to next pattern |
+| Double-tap | Lane header | Toggle mute |
+| Long-press (500ms) | Lane header | Deactivate pattern |
 
 ### UI Controls
 
 | Control | Location | Action |
 |---------|----------|--------|
+| Category tabs | Top | Switch between DRUMS/BASS/MELODIC |
+| Tension slider | Below tabs | Drag to build tension (0-100%) |
+| DROP button | Right of tension | Trigger the drop |
+| Stab buttons | Bottom | Tap for one-shot FX |
 | Play/Pause | Bottom center | Toggle clock |
-| Tempo +/- | Top right | Adjust BPM (±4) |
+| Tempo +/- | Below tension bar, right | Adjust BPM (±4) |
 
 ---
 
@@ -176,22 +254,38 @@ F_MINOR_BASS = ['F2', 'Ab2', 'Bb2', 'C3', 'Eb3']
 | **Sidechain Pump** | Non-kick lanes dim on kick | `sidechainRef` from audio engine |
 | **Playhead Trail** | Fading trail behind playhead | `playheadTrailRef` array |
 | **Downbeat Pulse** | Background brightens on beat 1 | `downbeatPulseRef` |
+| **Drop Flash** | Screen flashes on DROP | `dropFlashRef` |
+| **Stab Flash** | Buttons flash when triggered | `stabFlashRef` |
 | **Mute Overlay** | Dimmed lane with `[M]` prefix | Alpha overlay + label change |
+| **Pattern Pulse** | Active pattern lanes pulse | Animated arc with breathing |
 
 ### Color Palette ("Neon Noir")
 
 ```javascript
-COLORS = {
-  background: { core: '#030308', mid: '#050510', edge: '#0a1628' },
-  playhead: { line: '#ffffff', glow: '#00ffff' },
-  // Lane colors defined in LANES constant
-}
+// Background
+background: { core: '#030308', mid: '#050510', edge: '#0a1628' }
 
-// Lane colors:
-kick: '#f97316' (orange)
-hat:  '#00ffff' (cyan)
-clap: '#f8fafc' (white)
-bass: '#a855f7' (purple)
+// Lane colors
+kick:   '#f97316' (orange)
+hat:    '#00ffff' (cyan)
+clap:   '#f8fafc' (white)
+perc:   '#fbbf24' (amber)
+sub:    '#a855f7' (purple)
+wobble: '#ec4899' (pink)
+chord:  '#22d3ee' (cyan)
+lead:   '#4ade80' (green)
+arp:    '#f472b6' (pink)
+
+// Stab colors
+zap:    '#facc15' (yellow)
+impact: '#ef4444' (red)
+vocal:  '#8b5cf6' (violet)
+riser:  '#06b6d4' (cyan)
+
+// Category colors
+drums:   '#f97316' (orange)
+bass:    '#a855f7' (purple)
+melodic: '#22d3ee' (cyan)
 ```
 
 ---
@@ -203,7 +297,9 @@ bass: '#a855f7' (purple)
 | **Initialize Tone.js ONLY on first user gesture** | Browser autoplay policies |
 | **Use `Tone.start()` inside tap handler** | Required for iOS Safari |
 | **Sidechain on kick only** | Creates the "pump" feel |
-| **Bass cycles through F-minor pentatonic** | Always sounds musical |
+| **All content in C minor** | Any combination sounds musical |
+| **Pattern lanes auto-activate on interaction** | Instant gratification |
+| **Wobble runs continuously when active** | Signature EDM texture |
 
 ---
 
@@ -255,12 +351,24 @@ export function SequencerCanvas() {
 Before any commit:
 
 1. **Fresh browser** — Audio starts on first tap
-2. **All 4 lanes** — Visible and interactive
-3. **Double-tap mute** — Toggles on/off correctly
-4. **Long-press clear** — Clears lane triggers
-5. **Tempo control** — +/- buttons work (80-160 range)
-6. **60fps** — Smooth playhead, no stuttering
-7. **Mobile** — Touch interactions work
+2. **Category tabs** — All three categories switch correctly
+3. **Grid lanes** — Tap to toggle, sounds play
+4. **Pattern lanes** — Tap to cycle patterns, patterns play
+5. **Double-tap mute** — Toggles on/off correctly
+6. **Long-press clear** — Clears grid lanes / deactivates pattern lanes
+7. **Tension slider** — Drag works, filter sweeps audibly
+8. **DROP button** — Impact plays, filter resets
+9. **Stab buttons** — All four play distinct sounds
+10. **Tempo control** — +/- buttons work (80-160 range)
+11. **60fps** — Smooth playhead, no stuttering
+12. **Mobile** — Touch interactions work
+
+Full integration test:
+- Enable all lane types
+- Drag tension to 100%
+- Hit DROP
+- Tap stabs during playback
+- Cycle through all patterns
 
 ---
 
@@ -271,13 +379,19 @@ Before any commit:
 2. Check: Is `ensureAudioReady()` called before playback?
 3. iOS: Ensure audio context resumes: `Tone.context.resume()`
 
-### "Lanes Not Showing"
-1. Check: `unlockedLanes` state in sequencer.js
-2. Check: `unlockProgress` in render loop (should be > 0.01)
+### "Pattern Lane Not Playing"
+1. Check: Is `activeLanes[lane]` true?
+2. Check: Is the lane muted? (`mutedLanes[lane]`)
+3. Check: For chord, is it a downbeat? (step === 0)
 
-### "Mute Not Toggling"
-1. Check browser console for double-tap detection logs
-2. Verify tap is within header area (left 60px of lane)
+### "Wobble Not Working"
+1. Check: Is wobble lane active?
+2. Check: Is `startWobble()` being called?
+3. Check: LFO connection to filter frequency
+
+### "Tension Not Affecting Sound"
+1. Check: Is `masterHighpass` initialized?
+2. Check: Is `setMasterHighpass()` being called with correct frequency?
 
 ### "Performance Issues"
 1. Reduce `shadowBlur` in constants
@@ -298,12 +412,17 @@ Before any commit:
 
 The project is complete when:
 
-- [x] 4-lane step sequencer working
-- [x] Tap to toggle triggers
+- [x] Category-based lane system (DRUMS/BASS/MELODIC)
+- [x] 5 grid lanes (kick, hat, clap, perc, sub)
+- [x] 4 pattern lanes (wobble, chord, lead, arp)
+- [x] 4 stab buttons (zap, impact, vocal, riser)
+- [x] Tension slider + DROP button
+- [x] Tap to toggle grid triggers
+- [x] Tap to cycle pattern lanes
 - [x] Playhead loops at 128 BPM (adjustable 80-160)
-- [x] Kick, hat, clap, bass sounds distinct
+- [x] All sounds distinct and musical
 - [x] Sidechain pump on kick
-- [x] Visual feedback (flash, ripple, breathing)
+- [x] Visual feedback (flash, ripple, breathing, drop flash)
 - [x] Mute/clear lane gestures
 - [x] Tempo control UI
 - [ ] 60fps on mobile
@@ -315,15 +434,22 @@ The project is complete when:
 ## 14. Historical Context
 
 This project was originally designed as a physics-based marble toy (see `docs/archive/`).
-It was migrated to a lane-based step sequencer for:
+It was migrated to a lane-based step sequencer, then expanded to a full EDM creation toy:
 
-- **Predictable timing** — Music plays exactly on beat
-- **Simpler mental model** — Clear grid instead of chaotic physics
-- **Reduced complexity** — ~73% less code (no Matter.js)
-- **Better UX** — Intentional patterns vs random collisions
+**Phase 1 (Sequencer Migration):**
+- Predictable timing — Music plays exactly on beat
+- Simpler mental model — Clear grid instead of chaotic physics
+- Reduced complexity — ~73% less code (no Matter.js)
+
+**Phase 2 (EDM Expansion):**
+- Category tabs — Organized 9 lanes into 3 categories
+- Pattern lanes — Pre-made musical patterns (wobble, chord, lead, arp)
+- Stab buttons — Instant EDM moments (impact, riser, zap, vocal)
+- Build/Drop system — Tension slider for EDM builds + DROP button
+- C minor lock — All content harmonically compatible
 
 The archived docs preserve the original vision for reference.
 
 ---
 
-*Last Updated: January 2026 (Post-Sequencer Migration)*
+*Last Updated: January 2026 (Post-EDM Expansion)*

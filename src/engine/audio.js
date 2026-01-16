@@ -1,6 +1,12 @@
 import * as Tone from 'tone';
-import { F_MINOR_BASS } from './constants.js';
-import { initClock, disposeClock, emitSidechain } from './clock.js';
+import {
+  C_MINOR_BASS,
+  PERC_PITCHES,
+  CHORD_PROGRESSIONS,
+  LEAD_PHRASES,
+  ARP_NOTES,
+} from './constants.js';
+import { initClock, disposeClock, emitSidechain, getTempo } from './clock.js';
 
 // Audio engine singleton state
 let kickSynth = null;
@@ -8,14 +14,44 @@ let hatSynth = null;
 let hatFilter = null;
 let clapSynth = null;
 let clapFilter = null;
-let bassSynth = null;
+let subSynth = null;
+let percSynth = null;
+let wobbleSynth = null;
+let wobbleLFO = null;
+let chordSynth = null;
+let leadSynth = null;
+let arpSynth = null;
+
+// Stab synths
+let impactSynth = null;
+let impactNoise = null;
+let riserSynth = null;
+let riserFilter = null;
+let zapSynth = null;
+let vocalSynth = null;
+
+// Build/Drop system
+let masterHighpass = null;
+let snareRollLoop = null;
+
 let sidechainGain = null;
 let masterCompressor = null;
 let masterLimiter = null;
 let isInitialized = false;
 
-// Bass note index (cycles through scale)
-let bassNoteIndex = 0;
+// Note indices for cycling through scales/patterns
+let subNoteIndex = 0;
+let percPitchIndex = 0;
+let leadNoteIndex = 0;
+let arpNoteIndex = 0;
+let arpDirection = 1; // 1 = up, -1 = down
+
+// Pattern state
+let wobbleRate = '8n'; // Current wobble LFO rate
+let currentChordProgression = 'i-VI-III-VII';
+let currentChordIndex = 0;
+let currentLeadPhrase = 'Hook 1';
+let currentArpMode = 'Up'; // Up, Down, Random
 
 /**
  * Initialize the audio engine
@@ -39,9 +75,16 @@ export async function initAudio() {
 
     masterLimiter = new Tone.Limiter(-1).connect(masterCompressor);
 
+    // Master highpass filter for build/drop system
+    masterHighpass = new Tone.Filter({
+      frequency: 20,
+      type: 'highpass',
+      rolloff: -24,
+    }).connect(masterLimiter);
+
     // === SIDECHAIN GAIN ===
     // All non-kick sounds route through this for the "pump" effect
-    sidechainGain = new Tone.Gain(1).connect(masterLimiter);
+    sidechainGain = new Tone.Gain(1).connect(masterHighpass);
 
     // === KICK SYNTH (808-Style) ===
     kickSynth = new Tone.MembraneSynth({
@@ -54,7 +97,7 @@ export async function initAudio() {
         sustain: 0.01,
         release: 1.4,
       },
-    }).connect(masterLimiter); // Kick bypasses sidechain
+    }).connect(masterHighpass); // Kick bypasses sidechain
 
     kickSynth.volume.value = -3;
 
@@ -96,8 +139,23 @@ export async function initAudio() {
 
     clapSynth.volume.value = -8;
 
-    // === BASS SYNTH (Sub bass with filter) ===
-    bassSynth = new Tone.MonoSynth({
+    // === PERC SYNTH (Tuned percussion, cycling pitches) ===
+    percSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.02,
+      octaves: 2,
+      oscillator: { type: 'sine' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.15,
+        sustain: 0,
+        release: 0.1,
+      },
+    }).connect(sidechainGain);
+
+    percSynth.volume.value = -8;
+
+    // === SUB SYNTH (Sub bass with filter) ===
+    subSynth = new Tone.MonoSynth({
       oscillator: { type: 'square' },
       filter: {
         Q: 2,
@@ -120,7 +178,197 @@ export async function initAudio() {
       },
     }).connect(sidechainGain);
 
-    bassSynth.volume.value = -6;
+    subSynth.volume.value = -6;
+
+    // === WOBBLE SYNTH (Dubstep bass with LFO) ===
+    wobbleSynth = new Tone.MonoSynth({
+      oscillator: { type: 'sawtooth' },
+      filter: {
+        Q: 6,
+        type: 'lowpass',
+        rolloff: -24,
+      },
+      envelope: {
+        attack: 0.01,
+        decay: 0.1,
+        sustain: 0.8,
+        release: 0.3,
+      },
+      filterEnvelope: {
+        attack: 0.01,
+        decay: 0.1,
+        sustain: 0.5,
+        release: 0.3,
+        baseFrequency: 200,
+        octaves: 3,
+      },
+    }).connect(sidechainGain);
+
+    wobbleSynth.volume.value = -8;
+
+    // LFO for wobble filter modulation
+    wobbleLFO = new Tone.LFO({
+      frequency: '8n',
+      min: 100,
+      max: 2000,
+      type: 'sine',
+    });
+    wobbleLFO.connect(wobbleSynth.filter.frequency);
+
+    // === CHORD SYNTH (PolySynth for pads) ===
+    chordSynth = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'triangle' },
+      envelope: {
+        attack: 0.1,
+        decay: 0.3,
+        sustain: 0.5,
+        release: 0.8,
+      },
+    }).connect(sidechainGain);
+
+    chordSynth.volume.value = -12;
+
+    // === LEAD SYNTH (Mono lead for hooks) ===
+    leadSynth = new Tone.MonoSynth({
+      oscillator: { type: 'square' },
+      filter: {
+        Q: 3,
+        type: 'lowpass',
+        rolloff: -12,
+      },
+      envelope: {
+        attack: 0.005,
+        decay: 0.1,
+        sustain: 0.3,
+        release: 0.2,
+      },
+      filterEnvelope: {
+        attack: 0.01,
+        decay: 0.1,
+        sustain: 0.5,
+        release: 0.2,
+        baseFrequency: 500,
+        octaves: 2.5,
+      },
+    }).connect(sidechainGain);
+
+    leadSynth.volume.value = -10;
+
+    // === ARP SYNTH (Plucky arpeggiator) ===
+    arpSynth = new Tone.MonoSynth({
+      oscillator: { type: 'sawtooth' },
+      filter: {
+        Q: 2,
+        type: 'lowpass',
+        rolloff: -24,
+      },
+      envelope: {
+        attack: 0.001,
+        decay: 0.15,
+        sustain: 0.1,
+        release: 0.1,
+      },
+      filterEnvelope: {
+        attack: 0.001,
+        decay: 0.15,
+        sustain: 0.3,
+        release: 0.1,
+        baseFrequency: 800,
+        octaves: 2,
+      },
+    }).connect(sidechainGain);
+
+    arpSynth.volume.value = -10;
+
+    // === STAB: IMPACT (Pink noise sweep + membrane thump) ===
+    impactNoise = new Tone.NoiseSynth({
+      noise: { type: 'pink' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.5,
+        sustain: 0,
+        release: 0.3,
+      },
+    }).connect(sidechainGain);
+    impactNoise.volume.value = -8;
+
+    impactSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.08,
+      octaves: 8,
+      oscillator: { type: 'sine' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.6,
+        sustain: 0,
+        release: 0.4,
+      },
+    }).connect(masterHighpass);
+    impactSynth.volume.value = -4;
+
+    // === STAB: RISER (White noise with filter sweep) ===
+    riserFilter = new Tone.Filter({
+      frequency: 200,
+      type: 'lowpass',
+      rolloff: -24,
+      Q: 4,
+    }).connect(sidechainGain);
+
+    riserSynth = new Tone.NoiseSynth({
+      noise: { type: 'white' },
+      envelope: {
+        attack: 0.01,
+        decay: 0.1,
+        sustain: 1,
+        release: 0.5,
+      },
+    }).connect(riserFilter);
+    riserSynth.volume.value = -12;
+
+    // === STAB: ZAP (Quick FM synth zap) ===
+    zapSynth = new Tone.FMSynth({
+      harmonicity: 8,
+      modulationIndex: 20,
+      oscillator: { type: 'sine' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.15,
+        sustain: 0,
+        release: 0.1,
+      },
+      modulation: { type: 'square' },
+      modulationEnvelope: {
+        attack: 0.001,
+        decay: 0.1,
+        sustain: 0,
+        release: 0.1,
+      },
+    }).connect(sidechainGain);
+    zapSynth.volume.value = -10;
+
+    // === STAB: VOCAL (Formant-like filter sweep) ===
+    vocalSynth = new Tone.MonoSynth({
+      oscillator: { type: 'sawtooth' },
+      filter: {
+        Q: 8,
+        type: 'bandpass',
+        rolloff: -12,
+      },
+      envelope: {
+        attack: 0.05,
+        decay: 0.2,
+        sustain: 0.3,
+        release: 0.4,
+      },
+      filterEnvelope: {
+        attack: 0.05,
+        decay: 0.3,
+        sustain: 0.3,
+        release: 0.4,
+        baseFrequency: 300,
+        octaves: 3,
+      },
+    }).connect(sidechainGain);
+    vocalSynth.volume.value = -10;
 
     // Initialize the master clock
     initClock();
@@ -185,34 +433,302 @@ export function playClap() {
 }
 
 /**
- * Play bass note
- * Cycles through F-Minor pentatonic scale
+ * Play perc (cycling through pitches)
  */
-export function playBass() {
-  if (!isInitialized || !bassSynth) return;
+export function playPerc() {
+  if (!isInitialized || !percSynth) return;
 
-  const note = F_MINOR_BASS[bassNoteIndex];
-  bassSynth.triggerAttackRelease(note, '8n', Tone.now(), 0.8);
-
-  // Cycle to next note in scale
-  bassNoteIndex = (bassNoteIndex + 1) % F_MINOR_BASS.length;
+  const pitch = PERC_PITCHES[percPitchIndex];
+  percSynth.triggerAttackRelease(pitch, '16n', Tone.now(), 0.7);
+  percPitchIndex = (percPitchIndex + 1) % PERC_PITCHES.length;
 }
 
 /**
- * Play bass with specific note
- * @param {string} note - Note name (e.g., 'F2', 'Ab2')
+ * Play sub bass note (cycles through C-minor pentatonic)
  */
-export function playBassNote(note) {
-  if (!isInitialized || !bassSynth) return;
+export function playSub() {
+  if (!isInitialized || !subSynth) return;
 
-  bassSynth.triggerAttackRelease(note, '8n', Tone.now(), 0.8);
+  const note = C_MINOR_BASS[subNoteIndex];
+  subSynth.triggerAttackRelease(note, '8n', Tone.now(), 0.8);
+  subNoteIndex = (subNoteIndex + 1) % C_MINOR_BASS.length;
 }
 
 /**
- * Reset bass note index (e.g., on pattern restart)
+ * Reset sub note index (e.g., on pattern restart)
  */
-export function resetBassPattern() {
-  bassNoteIndex = 0;
+export function resetSubPattern() {
+  subNoteIndex = 0;
+}
+
+// Legacy aliases for backwards compatibility
+export const playBass = playSub;
+export const resetBassPattern = resetSubPattern;
+
+/**
+ * Start wobble bass
+ */
+export function startWobble() {
+  if (!isInitialized || !wobbleSynth || !wobbleLFO) return;
+
+  wobbleLFO.start();
+  wobbleSynth.triggerAttack('C2', Tone.now(), 0.7);
+}
+
+/**
+ * Stop wobble bass
+ */
+export function stopWobble() {
+  if (!wobbleSynth || !wobbleLFO) return;
+
+  wobbleSynth.triggerRelease(Tone.now());
+  wobbleLFO.stop();
+}
+
+/**
+ * Set wobble LFO rate
+ * @param {string} rate - '4n', '8n', or '16n'
+ */
+export function setWobbleRate(rate) {
+  wobbleRate = rate;
+  if (wobbleLFO) {
+    wobbleLFO.frequency.value = rate;
+  }
+}
+
+/**
+ * Get current wobble rate
+ */
+export function getWobbleRate() {
+  return wobbleRate;
+}
+
+/**
+ * Play chord (one shot on beat 1 of each bar)
+ */
+export function playChord() {
+  if (!isInitialized || !chordSynth) return;
+
+  const progression = CHORD_PROGRESSIONS[currentChordProgression];
+  if (!progression) return;
+
+  const chord = progression[currentChordIndex];
+  chordSynth.triggerAttackRelease(chord, '2n', Tone.now(), 0.6);
+  currentChordIndex = (currentChordIndex + 1) % progression.length;
+}
+
+/**
+ * Set chord progression
+ * @param {string} name - Progression name from CHORD_PROGRESSIONS
+ */
+export function setChordProgression(name) {
+  if (CHORD_PROGRESSIONS[name]) {
+    currentChordProgression = name;
+    currentChordIndex = 0;
+  }
+}
+
+/**
+ * Get current chord progression name
+ */
+export function getChordProgression() {
+  return currentChordProgression;
+}
+
+/**
+ * Play lead note (cycling through phrase)
+ */
+export function playLead() {
+  if (!isInitialized || !leadSynth) return;
+
+  const phrase = LEAD_PHRASES[currentLeadPhrase];
+  if (!phrase) return;
+
+  const note = phrase[leadNoteIndex];
+  leadSynth.triggerAttackRelease(note, '16n', Tone.now(), 0.7);
+  leadNoteIndex = (leadNoteIndex + 1) % phrase.length;
+}
+
+/**
+ * Set lead phrase
+ * @param {string} name - Phrase name from LEAD_PHRASES
+ */
+export function setLeadPhrase(name) {
+  if (LEAD_PHRASES[name]) {
+    currentLeadPhrase = name;
+    leadNoteIndex = 0;
+  }
+}
+
+/**
+ * Get current lead phrase name
+ */
+export function getLeadPhrase() {
+  return currentLeadPhrase;
+}
+
+/**
+ * Play arp note (based on current mode)
+ */
+export function playArp() {
+  if (!isInitialized || !arpSynth) return;
+
+  let note;
+  switch (currentArpMode) {
+    case 'Up':
+      note = ARP_NOTES[arpNoteIndex];
+      arpNoteIndex = (arpNoteIndex + 1) % ARP_NOTES.length;
+      break;
+    case 'Down':
+      note = ARP_NOTES[ARP_NOTES.length - 1 - arpNoteIndex];
+      arpNoteIndex = (arpNoteIndex + 1) % ARP_NOTES.length;
+      break;
+    case 'Random':
+      note = ARP_NOTES[Math.floor(Math.random() * ARP_NOTES.length)];
+      break;
+    default:
+      note = ARP_NOTES[0];
+  }
+
+  arpSynth.triggerAttackRelease(note, '16n', Tone.now(), 0.7);
+}
+
+/**
+ * Set arp mode
+ * @param {string} mode - 'Up', 'Down', or 'Random'
+ */
+export function setArpMode(mode) {
+  if (['Up', 'Down', 'Random'].includes(mode)) {
+    currentArpMode = mode;
+    arpNoteIndex = 0;
+  }
+}
+
+/**
+ * Get current arp mode
+ */
+export function getArpMode() {
+  return currentArpMode;
+}
+
+// === STAB FUNCTIONS ===
+
+/**
+ * Play impact stab
+ */
+export function playImpact() {
+  if (!isInitialized) return;
+
+  const now = Tone.now();
+  if (impactNoise) {
+    impactNoise.triggerAttackRelease('8n', now, 0.8);
+  }
+  if (impactSynth) {
+    impactSynth.triggerAttackRelease('C1', '4n', now, 1);
+  }
+  triggerSidechain();
+}
+
+/**
+ * Play riser stab (2-bar sweep)
+ */
+export function playRiser() {
+  if (!isInitialized || !riserSynth || !riserFilter) return;
+
+  const now = Tone.now();
+  const tempo = getTempo();
+  const barDuration = (60 / tempo) * 4; // Duration of one bar in seconds
+  const riserDuration = barDuration * 2; // 2 bars
+
+  // Reset filter
+  riserFilter.frequency.cancelScheduledValues(now);
+  riserFilter.frequency.setValueAtTime(200, now);
+  riserFilter.frequency.exponentialRampToValueAtTime(8000, now + riserDuration);
+
+  riserSynth.triggerAttack(now, 0.5);
+  riserSynth.triggerRelease(now + riserDuration);
+}
+
+/**
+ * Stop riser immediately
+ */
+export function stopRiser() {
+  if (!riserSynth) return;
+  riserSynth.triggerRelease(Tone.now());
+}
+
+/**
+ * Play zap stab
+ */
+export function playZap() {
+  if (!isInitialized || !zapSynth) return;
+
+  zapSynth.triggerAttackRelease('C5', '32n', Tone.now(), 0.8);
+}
+
+/**
+ * Play vocal stab
+ */
+export function playVocal() {
+  if (!isInitialized || !vocalSynth) return;
+
+  vocalSynth.triggerAttackRelease('C4', '8n', Tone.now(), 0.7);
+}
+
+// === BUILD/DROP SYSTEM ===
+
+/**
+ * Set master highpass filter frequency (for tension)
+ * @param {number} frequency - Filter frequency in Hz (20-2000)
+ */
+export function setMasterHighpass(frequency) {
+  if (!masterHighpass) return;
+
+  masterHighpass.frequency.rampTo(frequency, 0.05);
+}
+
+/**
+ * Start snare roll at specified rate
+ * @param {string} rate - '8n', '16n', or '32n'
+ */
+export function startSnareRoll(rate) {
+  if (!isInitialized || !clapSynth) return;
+
+  stopSnareRoll();
+
+  snareRollLoop = new Tone.Loop((time) => {
+    clapSynth.triggerAttackRelease('32n', time, 0.5);
+  }, rate).start(0);
+}
+
+/**
+ * Stop snare roll
+ */
+export function stopSnareRoll() {
+  if (snareRollLoop) {
+    snareRollLoop.stop();
+    snareRollLoop.dispose();
+    snareRollLoop = null;
+  }
+}
+
+/**
+ * Trigger drop effect (reset filter + impact)
+ */
+export function triggerDrop() {
+  if (!isInitialized) return;
+
+  // Reset filter
+  setMasterHighpass(20);
+
+  // Stop any riser
+  stopRiser();
+
+  // Stop snare roll
+  stopSnareRoll();
+
+  // Play impact
+  playImpact();
 }
 
 /**
@@ -220,44 +736,49 @@ export function resetBassPattern() {
  */
 export function disposeAudio() {
   disposeClock();
+  stopSnareRoll();
 
-  if (kickSynth) {
-    kickSynth.dispose();
-    kickSynth = null;
-  }
-  if (hatSynth) {
-    hatSynth.dispose();
-    hatSynth = null;
-  }
-  if (hatFilter) {
-    hatFilter.dispose();
-    hatFilter = null;
-  }
-  if (clapSynth) {
-    clapSynth.dispose();
-    clapSynth = null;
-  }
-  if (clapFilter) {
-    clapFilter.dispose();
-    clapFilter = null;
-  }
-  if (bassSynth) {
-    bassSynth.dispose();
-    bassSynth = null;
-  }
-  if (sidechainGain) {
-    sidechainGain.dispose();
-    sidechainGain = null;
-  }
-  if (masterCompressor) {
-    masterCompressor.dispose();
-    masterCompressor = null;
-  }
-  if (masterLimiter) {
-    masterLimiter.dispose();
-    masterLimiter = null;
-  }
+  const synths = [
+    kickSynth, hatSynth, clapSynth, subSynth, percSynth,
+    wobbleSynth, chordSynth, leadSynth, arpSynth,
+    impactSynth, impactNoise, riserSynth, zapSynth, vocalSynth,
+  ];
+
+  const filters = [hatFilter, clapFilter, riserFilter, masterHighpass];
+  const other = [wobbleLFO, sidechainGain, masterCompressor, masterLimiter];
+
+  [...synths, ...filters, ...other].forEach(node => {
+    if (node) {
+      node.dispose();
+    }
+  });
+
+  kickSynth = null;
+  hatSynth = null;
+  hatFilter = null;
+  clapSynth = null;
+  clapFilter = null;
+  subSynth = null;
+  percSynth = null;
+  wobbleSynth = null;
+  wobbleLFO = null;
+  chordSynth = null;
+  leadSynth = null;
+  arpSynth = null;
+  impactSynth = null;
+  impactNoise = null;
+  riserSynth = null;
+  riserFilter = null;
+  zapSynth = null;
+  vocalSynth = null;
+  masterHighpass = null;
+  sidechainGain = null;
+  masterCompressor = null;
+  masterLimiter = null;
 
   isInitialized = false;
-  bassNoteIndex = 0;
+  subNoteIndex = 0;
+  percPitchIndex = 0;
+  leadNoteIndex = 0;
+  arpNoteIndex = 0;
 }
