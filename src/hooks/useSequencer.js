@@ -58,8 +58,8 @@ import {
   playImpact,
   playRiser,
   stopRiser,
-  playZap,
-  playVocal,
+  playLaser,
+  playReverse,
   setMasterHighpass,
   startSnareRoll,
   stopSnareRoll,
@@ -388,11 +388,11 @@ export function useSequencer() {
       case 'riser':
         playRiser();
         break;
-      case 'zap':
-        playZap();
+      case 'laser':
+        playLaser();
         break;
-      case 'vocal':
-        playVocal();
+      case 'reverse':
+        playReverse();
         break;
     }
   }, []);

@@ -27,8 +27,9 @@ let impactSynth = null;
 let impactNoise = null;
 let riserSynth = null;
 let riserFilter = null;
-let zapSynth = null;
-let vocalSynth = null;
+let laserSynth = null;
+let reverseSynth = null;
+let reverseFilter = null;
 
 // Build/Drop system
 let masterHighpass = null;
@@ -281,29 +282,30 @@ export async function initAudio() {
     arpSynth.volume.value = -10;
 
     // === STAB: IMPACT (Pink noise sweep + membrane thump) ===
+    // Boosted for more punch
     impactNoise = new Tone.NoiseSynth({
       noise: { type: 'pink' },
-      envelope: {
-        attack: 0.001,
-        decay: 0.5,
-        sustain: 0,
-        release: 0.3,
-      },
-    }).connect(sidechainGain);
-    impactNoise.volume.value = -8;
-
-    impactSynth = new Tone.MembraneSynth({
-      pitchDecay: 0.08,
-      octaves: 8,
-      oscillator: { type: 'sine' },
       envelope: {
         attack: 0.001,
         decay: 0.6,
         sustain: 0,
         release: 0.4,
       },
+    }).connect(sidechainGain);
+    impactNoise.volume.value = -4; // Boosted from -8
+
+    impactSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.1,
+      octaves: 8,
+      oscillator: { type: 'sine' },
+      envelope: {
+        attack: 0.001,
+        decay: 0.8,
+        sustain: 0,
+        release: 0.5,
+      },
     }).connect(masterHighpass);
-    impactSynth.volume.value = -4;
+    impactSynth.volume.value = 0; // Boosted from -4
 
     // === STAB: RISER (White noise with filter sweep) ===
     riserFilter = new Tone.Filter({
@@ -324,51 +326,45 @@ export async function initAudio() {
     }).connect(riserFilter);
     riserSynth.volume.value = -12;
 
-    // === STAB: ZAP (Quick FM synth zap) ===
-    zapSynth = new Tone.FMSynth({
-      harmonicity: 8,
-      modulationIndex: 20,
+    // === STAB: LASER (Clean pitch-down sweep C5→C2) ===
+    laserSynth = new Tone.FMSynth({
+      harmonicity: 4, // More musical, less harsh
+      modulationIndex: 12,
       oscillator: { type: 'sine' },
       envelope: {
         attack: 0.001,
-        decay: 0.15,
-        sustain: 0,
-        release: 0.1,
+        decay: 0.45,    // Extended for longer tail
+        sustain: 0.1,
+        release: 0.2,
       },
-      modulation: { type: 'square' },
+      modulation: { type: 'sine' },
       modulationEnvelope: {
         attack: 0.001,
-        decay: 0.1,
-        sustain: 0,
-        release: 0.1,
+        decay: 0.4,
+        sustain: 0.1,
+        release: 0.2,
       },
     }).connect(sidechainGain);
-    zapSynth.volume.value = -10;
+    laserSynth.volume.value = -4; // Boosted for more impact
 
-    // === STAB: VOCAL (Formant-like filter sweep) ===
-    vocalSynth = new Tone.MonoSynth({
-      oscillator: { type: 'sawtooth' },
-      filter: {
-        Q: 8,
-        type: 'bandpass',
-        rolloff: -12,
-      },
-      envelope: {
-        attack: 0.05,
-        decay: 0.2,
-        sustain: 0.3,
-        release: 0.4,
-      },
-      filterEnvelope: {
-        attack: 0.05,
-        decay: 0.3,
-        sustain: 0.3,
-        release: 0.4,
-        baseFrequency: 300,
-        octaves: 3,
-      },
+    // === STAB: REVERSE (Reversed cymbal/reverb swell - fade IN then cut) ===
+    reverseFilter = new Tone.Filter({
+      frequency: 200,
+      type: 'lowpass',
+      rolloff: -24,
+      Q: 3,
     }).connect(sidechainGain);
-    vocalSynth.volume.value = -10;
+
+    reverseSynth = new Tone.NoiseSynth({
+      noise: { type: 'white' },
+      envelope: {
+        attack: 0.8,   // Extended swell-in (was 0.4)
+        decay: 0.08,   // Quick cut
+        sustain: 0,
+        release: 0.08,
+      },
+    }).connect(reverseFilter);
+    reverseSynth.volume.value = -5; // Boosted for more impact
 
     // Initialize the master clock
     initClock();
@@ -658,21 +654,36 @@ export function stopRiser() {
 }
 
 /**
- * Play zap stab
+ * Play laser stab (pitch-down sweep C5→C2)
  */
-export function playZap() {
-  if (!isInitialized || !zapSynth) return;
+export function playLaser() {
+  if (!isInitialized || !laserSynth) return;
 
-  zapSynth.triggerAttackRelease('C5', '32n', Tone.now(), 0.8);
+  const now = Tone.now();
+  // Trigger at C5 with longer duration for extended tail
+  laserSynth.triggerAttackRelease('C5', '4n', now, 0.95);
+  // Extended pitch sweep down to C2 (350ms)
+  laserSynth.frequency.setValueAtTime(Tone.Frequency('C5').toFrequency(), now);
+  laserSynth.frequency.exponentialRampToValueAtTime(
+    Tone.Frequency('C2').toFrequency(),
+    now + 0.35
+  );
 }
 
 /**
- * Play vocal stab
+ * Play reverse stab (swell-in effect with filter sweep)
  */
-export function playVocal() {
-  if (!isInitialized || !vocalSynth) return;
+export function playReverse() {
+  if (!isInitialized || !reverseSynth || !reverseFilter) return;
 
-  vocalSynth.triggerAttackRelease('C4', '8n', Tone.now(), 0.7);
+  const now = Tone.now();
+  // Extended filter sweep UP during the attack (creates "sucking in" effect)
+  reverseFilter.frequency.cancelScheduledValues(now);
+  reverseFilter.frequency.setValueAtTime(200, now);
+  reverseFilter.frequency.exponentialRampToValueAtTime(8000, now + 0.8);
+
+  // Extended swell-in - fade IN then cut abruptly
+  reverseSynth.triggerAttackRelease('2n', now, 0.9);
 }
 
 // === BUILD/DROP SYSTEM ===
@@ -741,10 +752,10 @@ export function disposeAudio() {
   const synths = [
     kickSynth, hatSynth, clapSynth, subSynth, percSynth,
     wobbleSynth, chordSynth, leadSynth, arpSynth,
-    impactSynth, impactNoise, riserSynth, zapSynth, vocalSynth,
+    impactSynth, impactNoise, riserSynth, laserSynth, reverseSynth,
   ];
 
-  const filters = [hatFilter, clapFilter, riserFilter, masterHighpass];
+  const filters = [hatFilter, clapFilter, riserFilter, reverseFilter, masterHighpass];
   const other = [wobbleLFO, sidechainGain, masterCompressor, masterLimiter];
 
   [...synths, ...filters, ...other].forEach(node => {
@@ -769,8 +780,9 @@ export function disposeAudio() {
   impactNoise = null;
   riserSynth = null;
   riserFilter = null;
-  zapSynth = null;
-  vocalSynth = null;
+  laserSynth = null;
+  reverseSynth = null;
+  reverseFilter = null;
   masterHighpass = null;
   sidechainGain = null;
   masterCompressor = null;

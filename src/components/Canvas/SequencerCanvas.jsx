@@ -19,6 +19,7 @@ import {
   STAB_ORDER,
 } from '../../engine/constants.js';
 import { getPatternName } from '../../engine/sequencer.js';
+import { getPerfSettings } from '../../utils/performance.js';
 
 export function SequencerCanvas() {
   const canvasRef = useRef(null);
@@ -73,6 +74,15 @@ export function SequencerCanvas() {
 
   // Tension slider drag state
   const isDraggingTensionRef = useRef(false);
+
+  // Performance optimization: cached gradients and settings
+  const perfSettingsRef = useRef(getPerfSettings());
+  const cachedGradientsRef = useRef({
+    background: null,
+    tension: null,
+    lastWidth: 0,
+    lastHeight: 0,
+  });
 
   // Set dimensions on mount and resize
   useEffect(() => {
@@ -155,38 +165,54 @@ export function SequencerCanvas() {
 
     const render = () => {
       const layout = getLayout();
+      const perf = perfSettingsRef.current;
 
       // === DECAY EFFECTS ===
       sidechainRef.current *= 0.92;
       downbeatPulseRef.current *= 0.95;
       dropFlashRef.current *= 0.9;
-      breathePhaseRef.current += 0.02;
+      if (perf.breathingEnabled) {
+        breathePhaseRef.current += 0.02;
+      }
 
-      // Decay hit flashes
-      Object.keys(hitFlashRef.current).forEach(key => {
+      // Decay hit flashes (optimized: for...in instead of Object.keys)
+      for (const key in hitFlashRef.current) {
         hitFlashRef.current[key] *= 0.82;
         if (hitFlashRef.current[key] < 0.01) {
           delete hitFlashRef.current[key];
         }
-      });
+      }
 
-      // Decay stab flashes
-      Object.keys(stabFlashRef.current).forEach(key => {
+      // Decay stab flashes (optimized: for...in)
+      for (const key in stabFlashRef.current) {
         stabFlashRef.current[key] *= 0.85;
         if (stabFlashRef.current[key] < 0.01) {
           delete stabFlashRef.current[key];
         }
-      });
+      }
 
-      // Update ripples
-      rippleRef.current = rippleRef.current
-        .map(r => ({ ...r, radius: r.radius + 3, alpha: r.alpha * 0.92 }))
-        .filter(r => r.alpha > 0.02);
+      // Update ripples (optimized: mutate in-place, limit count)
+      let rippleWriteIdx = 0;
+      for (let i = 0; i < rippleRef.current.length; i++) {
+        const r = rippleRef.current[i];
+        r.radius += 3;
+        r.alpha *= 0.92;
+        if (r.alpha > 0.02) {
+          rippleRef.current[rippleWriteIdx++] = r;
+        }
+      }
+      rippleRef.current.length = Math.min(rippleWriteIdx, perf.maxRipples);
 
-      // Update playhead trail
-      playheadTrailRef.current = playheadTrailRef.current
-        .map(t => ({ ...t, alpha: t.alpha * 0.88 }))
-        .filter(t => t.alpha > 0.02);
+      // Update playhead trail (optimized: mutate in-place)
+      let trailWriteIdx = 0;
+      for (let i = 0; i < playheadTrailRef.current.length; i++) {
+        const t = playheadTrailRef.current[i];
+        t.alpha *= 0.88;
+        if (t.alpha > 0.02) {
+          playheadTrailRef.current[trailWriteIdx++] = t;
+        }
+      }
+      playheadTrailRef.current.length = Math.min(trailWriteIdx, perf.maxTrailLength);
 
       // === CLEAR CANVAS ===
       ctx.fillStyle = COLORS.background.mid;
@@ -194,20 +220,37 @@ export function SequencerCanvas() {
 
       // === BACKGROUND WITH PULSE ===
       const pulseIntensity = downbeatPulseRef.current * 0.15 + dropFlashRef.current * 0.3;
-      const gradient = ctx.createRadialGradient(
-        dimensions.width / 2, dimensions.height / 2, 0,
-        dimensions.width / 2, dimensions.height / 2, dimensions.width / 2
-      );
 
-      const coreR = parseInt(COLORS.background.core.slice(1, 3), 16);
-      const coreG = parseInt(COLORS.background.core.slice(3, 5), 16);
-      const coreB = parseInt(COLORS.background.core.slice(5, 7), 16);
-      const pulseCore = `rgb(${Math.min(255, coreR + pulseIntensity * 60)}, ${Math.min(255, coreG + pulseIntensity * 80)}, ${Math.min(255, coreB + pulseIntensity * 100)})`;
+      if (perf.gradientQuality === 'none') {
+        // Low-power: solid color with simple pulse
+        const coreR = parseInt(COLORS.background.core.slice(1, 3), 16);
+        const coreG = parseInt(COLORS.background.core.slice(3, 5), 16);
+        const coreB = parseInt(COLORS.background.core.slice(5, 7), 16);
+        ctx.fillStyle = `rgb(${Math.min(255, coreR + pulseIntensity * 40)}, ${Math.min(255, coreG + pulseIntensity * 50)}, ${Math.min(255, coreB + pulseIntensity * 60)})`;
+        ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+      } else {
+        // Cache gradient if dimensions changed
+        const cache = cachedGradientsRef.current;
+        if (cache.lastWidth !== dimensions.width || cache.lastHeight !== dimensions.height) {
+          cache.background = ctx.createRadialGradient(
+            dimensions.width / 2, dimensions.height / 2, 0,
+            dimensions.width / 2, dimensions.height / 2, dimensions.width / 2
+          );
+          cache.background.addColorStop(0, COLORS.background.core);
+          cache.background.addColorStop(1, COLORS.background.edge);
+          cache.lastWidth = dimensions.width;
+          cache.lastHeight = dimensions.height;
+        }
 
-      gradient.addColorStop(0, pulseCore);
-      gradient.addColorStop(1, COLORS.background.edge);
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+        // Apply pulse as overlay for better performance
+        ctx.fillStyle = cache.background;
+        ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+
+        if (pulseIntensity > 0.01) {
+          ctx.fillStyle = `rgba(100, 150, 200, ${pulseIntensity * 0.3})`;
+          ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+        }
+      }
 
       // === DRAW CATEGORY TABS ===
       const tabWidth = dimensions.width / CATEGORY_ORDER.length;
@@ -232,9 +275,9 @@ export function SequencerCanvas() {
         ctx.font = `bold 14px monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        if (isActive) {
+        if (isActive && perf.glowEnabled) {
           ctx.shadowColor = cat.color;
-          ctx.shadowBlur = 8;
+          ctx.shadowBlur = perf.shadowBlur;
         }
         ctx.fillText(cat.name, tabX + tabWidth / 2, layout.tabsTop + layout.tabsHeight / 2);
         ctx.restore();
@@ -289,8 +332,10 @@ export function SequencerCanvas() {
 
       ctx.save();
       ctx.fillStyle = dropFlash > 0.1 ? '#ffffff' : '#ef4444';
-      ctx.shadowColor = '#ef4444';
-      ctx.shadowBlur = 8 + dropFlash * 20;
+      if (perf.glowEnabled) {
+        ctx.shadowColor = '#ef4444';
+        ctx.shadowBlur = perf.shadowBlur + (dropFlash * perf.shadowBlur * 2);
+      }
       ctx.beginPath();
       ctx.roundRect(dropButtonX, dropButtonY, dropButtonWidth, dropButtonHeight, 4);
       ctx.fill();
@@ -338,9 +383,11 @@ export function SequencerCanvas() {
         ctx.save();
         ctx.globalAlpha = unlockProgress;
 
-        // Calculate breathing glow for this lane
+        // Calculate breathing glow for this lane (simplified on mobile)
         const breatheOffset = laneIndex * 0.5;
-        const breatheValue = Math.sin(breathePhaseRef.current + breatheOffset) * 0.5 + 0.5;
+        const breatheValue = perf.breathingEnabled
+          ? Math.sin(breathePhaseRef.current + breatheOffset) * 0.5 + 0.5
+          : 0.5; // Static value when breathing disabled
 
         // Lane background with breathing glow (dimmed if muted)
         const muteDim = isLaneMuted ? 0.3 : 1;
@@ -348,14 +395,16 @@ export function SequencerCanvas() {
         ctx.fillStyle = `rgba(255, 255, 255, ${bgAlpha})`;
         ctx.fillRect(LANE_PADDING, laneY, dimensions.width - LANE_PADDING * 2, layout.laneHeight);
 
-        // Subtle colored glow at lane edges (breathing)
-        const edgeGlow = ctx.createLinearGradient(LANE_PADDING, laneY, LANE_PADDING, laneY + layout.laneHeight);
-        const laneGlowAlpha = (0.03 + breatheValue * 0.04) * muteDim;
-        edgeGlow.addColorStop(0, `${lane.color.core}${Math.round(laneGlowAlpha * 255).toString(16).padStart(2, '0')}`);
-        edgeGlow.addColorStop(0.5, 'transparent');
-        edgeGlow.addColorStop(1, `${lane.color.core}${Math.round(laneGlowAlpha * 255).toString(16).padStart(2, '0')}`);
-        ctx.fillStyle = edgeGlow;
-        ctx.fillRect(LANE_PADDING, laneY, dimensions.width - LANE_PADDING * 2, layout.laneHeight);
+        // Subtle colored glow at lane edges (breathing) - skip on low-power
+        if (perf.gradientQuality !== 'none') {
+          const edgeGlow = ctx.createLinearGradient(LANE_PADDING, laneY, LANE_PADDING, laneY + layout.laneHeight);
+          const laneGlowAlpha = (0.03 + breatheValue * 0.04) * muteDim;
+          edgeGlow.addColorStop(0, `${lane.color.core}${Math.round(laneGlowAlpha * 255).toString(16).padStart(2, '0')}`);
+          edgeGlow.addColorStop(0.5, 'transparent');
+          edgeGlow.addColorStop(1, `${lane.color.core}${Math.round(laneGlowAlpha * 255).toString(16).padStart(2, '0')}`);
+          ctx.fillStyle = edgeGlow;
+          ctx.fillRect(LANE_PADDING, laneY, dimensions.width - LANE_PADDING * 2, layout.laneHeight);
+        }
 
         // Apply sidechain visual compression to non-kick lanes
         let laneVisualScale = 1;
@@ -386,8 +435,10 @@ export function SequencerCanvas() {
         ctx.font = 'bold 11px monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.shadowColor = isLaneMuted ? '#333333' : lane.color.core;
-        ctx.shadowBlur = isLaneMuted ? 2 : 4 + breatheValue * 4;
+        if (perf.glowEnabled) {
+          ctx.shadowColor = isLaneMuted ? '#333333' : lane.color.core;
+          ctx.shadowBlur = isLaneMuted ? perf.shadowBlur * 0.25 : perf.shadowBlur * 0.5 + breatheValue * perf.shadowBlur * 0.5;
+        }
 
         let displayName = lane.name;
         if (isLaneMuted) {
@@ -462,16 +513,22 @@ export function SequencerCanvas() {
             if (isActive) {
               const color = lane.color.core;
               let radius = TRIGGER_RADIUS * laneVisualScale;
-              const triggerBreathe = Math.sin(breathePhaseRef.current * 2 + step * 0.3) * 0.08 + 1;
+              const triggerBreathe = perf.breathingEnabled
+                ? Math.sin(breathePhaseRef.current * 2 + step * 0.3) * 0.08 + 1
+                : 1;
               radius *= triggerBreathe;
 
-              if (flashIntensity > 0) {
-                ctx.shadowColor = '#ffffff';
-                ctx.shadowBlur = GLOW_BLUR + flashIntensity * 25;
+              if (perf.glowEnabled) {
+                if (flashIntensity > 0) {
+                  ctx.shadowColor = '#ffffff';
+                  ctx.shadowBlur = perf.shadowBlur + flashIntensity * perf.shadowBlur * 2;
+                  radius += flashIntensity * 6;
+                } else {
+                  ctx.shadowColor = color;
+                  ctx.shadowBlur = perf.shadowBlur + breatheValue * perf.shadowBlur * 0.5;
+                }
+              } else if (flashIntensity > 0) {
                 radius += flashIntensity * 6;
-              } else {
-                ctx.shadowColor = color;
-                ctx.shadowBlur = GLOW_BLUR + breatheValue * 4;
               }
 
               ctx.fillStyle = flashIntensity > 0.5 ? '#ffffff' : color;
@@ -486,7 +543,7 @@ export function SequencerCanvas() {
               ctx.arc(stepX, stepY, radius * 0.35, 0, Math.PI * 2);
               ctx.fill();
 
-              if (flashIntensity < 0.3) {
+              if (flashIntensity < 0.3 && perf.glowEnabled) {
                 ctx.strokeStyle = `${color}40`;
                 ctx.lineWidth = 1;
                 ctx.beginPath();
@@ -556,7 +613,7 @@ export function SequencerCanvas() {
             color: trailColor,
           });
 
-          if (playheadTrailRef.current.length > 8) {
+          if (playheadTrailRef.current.length > perf.maxTrailLength) {
             playheadTrailRef.current.shift();
           }
 
@@ -574,43 +631,56 @@ export function SequencerCanvas() {
           ctx.save();
           ctx.strokeStyle = COLORS.playhead.line;
           ctx.lineWidth = PLAYHEAD_WIDTH;
-          ctx.shadowColor = COLORS.playhead.glow;
-          ctx.shadowBlur = 15;
+          if (perf.glowEnabled) {
+            ctx.shadowColor = COLORS.playhead.glow;
+            ctx.shadowBlur = perf.shadowBlur * 1.5;
+          }
           ctx.beginPath();
           ctx.moveTo(playheadX, playheadTop);
           ctx.lineTo(playheadX, playheadBottom);
           ctx.stroke();
-          ctx.shadowBlur = 5;
-          ctx.stroke();
+          if (perf.glowEnabled) {
+            ctx.shadowBlur = perf.shadowBlur * 0.5;
+            ctx.stroke();
+          }
           ctx.restore();
         }
       }
 
-      // === DRAW STAB BUTTONS ===
-      const stabButtonWidth = (dimensions.width - LANE_PADDING * 2 - 30) / STAB_ORDER.length;
-      const stabButtonHeight = 44;
-      const stabButtonY = layout.stabBarTop + (STAB_BAR_HEIGHT - stabButtonHeight) / 2;
+      // === DRAW STAB BUTTONS (2x2 grid) ===
+      const stabCols = 2;
+      const stabRows = 2;
+      const stabGap = 8;
+      const stabGridWidth = dimensions.width - LANE_PADDING * 2;
+      const stabButtonWidth = (stabGridWidth - stabGap) / stabCols;
+      const stabButtonHeight = (STAB_BAR_HEIGHT - stabGap * 3) / stabRows;
 
       STAB_ORDER.forEach((stabId, index) => {
         const stab = STABS[stabId];
-        const stabX = LANE_PADDING + index * (stabButtonWidth + 10);
+        const col = index % stabCols;  // 0 or 1
+        const row = Math.floor(index / stabCols);  // 0 or 1
+        const stabX = LANE_PADDING + col * (stabButtonWidth + stabGap);
+        const stabY = layout.stabBarTop + stabGap + row * (stabButtonHeight + stabGap);
         const flash = stabFlashRef.current[stabId] || 0;
 
         ctx.save();
 
         // Button background
         ctx.fillStyle = flash > 0.1 ? stab.color : 'rgba(255, 255, 255, 0.1)';
-        ctx.shadowColor = stab.color;
-        ctx.shadowBlur = flash > 0.1 ? 15 : 0;
+        if (perf.glowEnabled && flash > 0.1) {
+          ctx.shadowColor = stab.color;
+          ctx.shadowBlur = perf.shadowBlur * 1.5;
+        }
         ctx.beginPath();
-        ctx.roundRect(stabX, stabButtonY, stabButtonWidth, stabButtonHeight, 8);
+        ctx.roundRect(stabX, stabY, stabButtonWidth, stabButtonHeight, 8);
         ctx.fill();
 
         // Button border
+        ctx.shadowBlur = 0;
         ctx.strokeStyle = stab.color;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.roundRect(stabX, stabButtonY, stabButtonWidth, stabButtonHeight, 8);
+        ctx.roundRect(stabX, stabY, stabButtonWidth, stabButtonHeight, 8);
         ctx.stroke();
 
         // Button text
@@ -618,8 +688,7 @@ export function SequencerCanvas() {
         ctx.font = 'bold 12px monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.shadowBlur = 0;
-        ctx.fillText(stab.name, stabX + stabButtonWidth / 2, stabButtonY + stabButtonHeight / 2);
+        ctx.fillText(stab.name, stabX + stabButtonWidth / 2, stabY + stabButtonHeight / 2);
 
         ctx.restore();
       });
@@ -680,15 +749,22 @@ export function SequencerCanvas() {
       return;
     }
 
-    // Check for stab button tap
-    const stabButtonWidth = (dimensions.width - LANE_PADDING * 2 - 30) / STAB_ORDER.length;
-    const stabButtonHeight = 44;
-    const stabButtonY = layout.stabBarTop + (STAB_BAR_HEIGHT - stabButtonHeight) / 2;
+    // Check for stab button tap (2x2 grid)
+    const stabCols = 2;
+    const stabRows = 2;
+    const stabGap = 8;
+    const stabGridWidth = dimensions.width - LANE_PADDING * 2;
+    const stabButtonWidth = (stabGridWidth - stabGap) / stabCols;
+    const stabButtonHeight = (STAB_BAR_HEIGHT - stabGap * 3) / stabRows;
 
-    if (y >= stabButtonY && y <= stabButtonY + stabButtonHeight) {
+    if (y >= layout.stabBarTop && y <= layout.stabBarTop + STAB_BAR_HEIGHT) {
       STAB_ORDER.forEach((stabId, index) => {
-        const stabX = LANE_PADDING + index * (stabButtonWidth + 10);
-        if (x >= stabX && x <= stabX + stabButtonWidth) {
+        const col = index % stabCols;
+        const row = Math.floor(index / stabCols);
+        const stabX = LANE_PADDING + col * (stabButtonWidth + stabGap);
+        const stabY = layout.stabBarTop + stabGap + row * (stabButtonHeight + stabGap);
+        if (x >= stabX && x <= stabX + stabButtonWidth &&
+            y >= stabY && y <= stabY + stabButtonHeight) {
           playStab(stabId);
           stabFlashRef.current[stabId] = 1;
         }

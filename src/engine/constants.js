@@ -13,7 +13,7 @@ export const TRIGGER_RADIUS = 10;   // Radius of trigger circles (reduced slight
 export const LANE_PADDING = 20;     // Padding around lanes
 export const HEADER_WIDTH = 60;     // Width of lane header (for tap detection)
 export const STAB_BUTTON_SIZE = 56; // Size of stab buttons
-export const STAB_BAR_HEIGHT = 70;  // Height of stab button bar
+export const STAB_BAR_HEIGHT = 100; // Height of stab button bar (2x2 grid)
 
 // === CATEGORY SYSTEM ===
 export const CATEGORIES = {
@@ -191,17 +191,18 @@ export const LEAD_PHRASES = {
 export const ARP_NOTES = ['C3', 'Eb3', 'G3', 'Bb3', 'C4'];
 
 // === STAB FX ===
+// Layout: 2x2 grid - top row (instant hits), bottom row (sweeps/builds)
 export const STABS = {
-  zap: {
-    name: 'ZAP',
+  laser: {
+    name: 'LASER',
     color: '#facc15',
   },
   impact: {
     name: 'IMPACT',
     color: '#ef4444',
   },
-  vocal: {
-    name: 'VOCAL',
+  reverse: {
+    name: 'REVERSE',
     color: '#8b5cf6',
   },
   riser: {
@@ -210,7 +211,8 @@ export const STABS = {
   },
 };
 
-export const STAB_ORDER = ['zap', 'impact', 'vocal', 'riser'];
+// Grid positions: [0]=top-left, [1]=top-right, [2]=bottom-left, [3]=bottom-right
+export const STAB_ORDER = ['laser', 'impact', 'reverse', 'riser'];
 
 // === BUILD/DROP SYSTEM ===
 export const BUILD_DROP = {
