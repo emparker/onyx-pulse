@@ -17,6 +17,10 @@ import {
   LANES_BY_CATEGORY,
   STABS,
   STAB_ORDER,
+  MAX_LAYERS,
+  LAYER_INDICATOR_RADIUS,
+  LAYER_INDICATOR_SPACING,
+  CONTROL_STRIP_HEIGHT,
 } from '../../engine/constants.js';
 import { getPatternName } from '../../engine/sequencer.js';
 import { getPerfSettings } from '../../utils/performance.js';
@@ -50,6 +54,13 @@ export function SequencerCanvas() {
     setTension,
     triggerDrop,
     playStab,
+    // Layer state
+    layers,
+    activeLayerIndex,
+    canAddLayer,
+    lockAndBuild,
+    selectLayer,
+    isLayerLocked,
   } = useSequencer();
 
   // Audio engine
@@ -66,6 +77,8 @@ export function SequencerCanvas() {
   const laneUnlockAnimRef = useRef({}); // { laneId: animProgress 0-1 }
   const stabFlashRef = useRef({}); // { stabId: flashIntensity }
   const dropFlashRef = useRef(0); // Flash intensity for drop
+  const lockBuildFlashRef = useRef(0); // Flash intensity for lock+build button
+  const newLayerPulseRef = useRef(0); // Pulse for newly created layer
 
   // Interaction state for double-tap and long-press
   const lastTapRef = useRef({ laneId: null, time: 0 });
@@ -122,20 +135,26 @@ export function SequencerCanvas() {
     };
   }, [subscribeToBeat]);
 
-  // Calculate layout
+  // Calculate layout - unified control strip design
   const getLayout = useCallback(() => {
     const categoryLanes = LANES_BY_CATEGORY[currentCategory] || [];
     const numLanes = categoryLanes.length;
 
-    // Reserve space for: tabs (50px) + tension bar (50px) + lanes + stab bar (70px) + play button area (80px)
-    const tabsHeight = 50;
-    const tensionBarHeight = 50;
+    // Reserve space for: control strip (56px) + lanes + stab bar + play button area (80px)
+    const controlStripHeight = CONTROL_STRIP_HEIGHT;
     const playButtonAreaHeight = 80;
 
-    const availableLaneSpace = dimensions.height - tabsHeight - tensionBarHeight - STAB_BAR_HEIGHT - playButtonAreaHeight;
+    const availableLaneSpace = dimensions.height - controlStripHeight - STAB_BAR_HEIGHT - playButtonAreaHeight;
     const totalLaneHeight = numLanes * LANE_HEIGHT;
-    const topOffset = tensionBarHeight + tabsHeight + Math.max(0, (availableLaneSpace - totalLaneHeight) / 2);
+    const topOffset = controlStripHeight + Math.max(0, (availableLaneSpace - totalLaneHeight) / 2);
     const stepWidth = (dimensions.width - LANE_PADDING * 2 - HEADER_WIDTH) / STEPS_PER_BAR;
+
+    // Control strip zone calculations
+    const categoryZoneWidth = Math.min(dimensions.width * 0.32, 200);
+    const layerDotsZoneWidth = 70;
+    const tempoZoneWidth = 80;
+    const dropButtonWidth = 56;
+    const tensionZoneWidth = dimensions.width - categoryZoneWidth - layerDotsZoneWidth - tempoZoneWidth - dropButtonWidth - 40; // 40px padding
 
     return {
       topOffset,
@@ -145,10 +164,21 @@ export function SequencerCanvas() {
       gridRight: dimensions.width - LANE_PADDING,
       gridWidth: dimensions.width - LANE_PADDING * 2 - HEADER_WIDTH,
       headerWidth: HEADER_WIDTH,
-      tabsTop: 0,
-      tabsHeight,
-      tensionTop: tabsHeight,
-      tensionHeight: tensionBarHeight,
+      // Unified control strip
+      controlStripTop: 0,
+      controlStripHeight,
+      // Zone positions within control strip
+      categoryZoneX: 0,
+      categoryZoneWidth,
+      layerDotsZoneX: categoryZoneWidth,
+      layerDotsZoneWidth,
+      tensionZoneX: categoryZoneWidth + layerDotsZoneWidth,
+      tensionZoneWidth,
+      dropButtonX: categoryZoneWidth + layerDotsZoneWidth + tensionZoneWidth + 8,
+      dropButtonWidth,
+      tempoZoneX: dimensions.width - tempoZoneWidth - 8,
+      tempoZoneWidth,
+      // Other areas
       stabBarTop: dimensions.height - STAB_BAR_HEIGHT - playButtonAreaHeight,
       categoryLanes,
       numLanes,
@@ -171,6 +201,8 @@ export function SequencerCanvas() {
       sidechainRef.current *= 0.92;
       downbeatPulseRef.current *= 0.95;
       dropFlashRef.current *= 0.9;
+      lockBuildFlashRef.current *= 0.88;
+      newLayerPulseRef.current *= 0.92;
       if (perf.breathingEnabled) {
         breathePhaseRef.current += 0.02;
       }
@@ -252,67 +284,148 @@ export function SequencerCanvas() {
         }
       }
 
-      // === DRAW CATEGORY TABS ===
-      const tabWidth = dimensions.width / CATEGORY_ORDER.length;
+      // === DRAW UNIFIED CONTROL STRIP ===
+      const stripCenterY = layout.controlStripHeight / 2;
+
+      // Control strip background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      ctx.fillRect(0, 0, dimensions.width, layout.controlStripHeight);
+
+      // Bottom border line
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, layout.controlStripHeight);
+      ctx.lineTo(dimensions.width, layout.controlStripHeight);
+      ctx.stroke();
+
+      // --- ZONE 1: Category Tabs ---
+      const tabWidth = layout.categoryZoneWidth / CATEGORY_ORDER.length;
       CATEGORY_ORDER.forEach((catId, index) => {
         const cat = CATEGORIES[catId];
         const isActive = catId === currentCategory;
         const tabX = index * tabWidth;
 
-        // Tab background
-        ctx.fillStyle = isActive ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.3)';
-        ctx.fillRect(tabX, layout.tabsTop, tabWidth, layout.tabsHeight);
-
-        // Tab border
+        // Active tab indicator (bottom border)
         if (isActive) {
           ctx.fillStyle = cat.color;
-          ctx.fillRect(tabX, layout.tabsTop + layout.tabsHeight - 3, tabWidth, 3);
+          ctx.fillRect(tabX + 4, layout.controlStripHeight - 3, tabWidth - 8, 3);
         }
 
         // Tab text
         ctx.save();
-        ctx.fillStyle = isActive ? cat.color : '#666666';
-        ctx.font = `bold 14px monospace`;
+        ctx.fillStyle = isActive ? cat.color : '#555555';
+        ctx.font = `bold 11px monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         if (isActive && perf.glowEnabled) {
           ctx.shadowColor = cat.color;
-          ctx.shadowBlur = perf.shadowBlur;
+          ctx.shadowBlur = perf.shadowBlur * 0.5;
         }
-        ctx.fillText(cat.name, tabX + tabWidth / 2, layout.tabsTop + layout.tabsHeight / 2);
+        ctx.fillText(cat.name, tabX + tabWidth / 2, stripCenterY);
         ctx.restore();
       });
 
-      // === DRAW TENSION BAR ===
-      const tensionBarPadding = 20;
-      const tensionBarWidth = dimensions.width - tensionBarPadding * 2 - 100; // Reserve space for DROP button
-      const tensionBarHeight = 12;
-      const tensionBarX = tensionBarPadding;
-      const tensionBarY = layout.tensionTop + (layout.tensionHeight - tensionBarHeight) / 2;
+      // Vertical divider after categories
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(layout.categoryZoneWidth, 10);
+      ctx.lineTo(layout.categoryZoneWidth, layout.controlStripHeight - 10);
+      ctx.stroke();
 
-      // Tension label
-      ctx.fillStyle = '#666666';
-      ctx.font = '10px monospace';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('TENSION', tensionBarX, tensionBarY - 12);
+      // --- ZONE 2: Layer Indicator Dots ---
+      const dotsStartX = layout.layerDotsZoneX + 15;
+      for (let i = 0; i < MAX_LAYERS; i++) {
+        const dotX = dotsStartX + i * LAYER_INDICATOR_SPACING;
+        const layer = layers[i];
+
+        ctx.save();
+
+        if (layer) {
+          const isActive = i === activeLayerIndex;
+          const isLocked = layer.locked;
+
+          let dotColor;
+          if (isActive) {
+            dotColor = COLORS.layer.active;
+            if (newLayerPulseRef.current > 0.1) {
+              ctx.shadowColor = COLORS.layer.active;
+              ctx.shadowBlur = perf.shadowBlur * 2 * newLayerPulseRef.current;
+            } else if (perf.glowEnabled) {
+              ctx.shadowColor = COLORS.layer.active;
+              ctx.shadowBlur = perf.shadowBlur * 0.5;
+            }
+          } else if (isLocked) {
+            dotColor = COLORS.layer.locked;
+          } else {
+            dotColor = COLORS.layer.empty;
+          }
+
+          ctx.fillStyle = dotColor;
+          ctx.beginPath();
+
+          if (isLocked) {
+            // Diamond shape for locked
+            const r = LAYER_INDICATOR_RADIUS;
+            ctx.moveTo(dotX, stripCenterY - r);
+            ctx.lineTo(dotX + r, stripCenterY);
+            ctx.lineTo(dotX, stripCenterY + r);
+            ctx.lineTo(dotX - r, stripCenterY);
+            ctx.closePath();
+          } else {
+            ctx.arc(dotX, stripCenterY, LAYER_INDICATOR_RADIUS, 0, Math.PI * 2);
+          }
+          ctx.fill();
+
+          // Layer number
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = isActive || isLocked ? '#000000' : '#ffffff';
+          ctx.font = 'bold 8px monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(i + 1), dotX, stripCenterY + 1);
+        } else {
+          // Empty slot
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(dotX, stripCenterY, LAYER_INDICATOR_RADIUS - 1, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      }
+
+      // Vertical divider after layer dots
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.beginPath();
+      ctx.moveTo(layout.layerDotsZoneX + layout.layerDotsZoneWidth, 10);
+      ctx.lineTo(layout.layerDotsZoneX + layout.layerDotsZoneWidth, layout.controlStripHeight - 10);
+      ctx.stroke();
+
+      // --- ZONE 3: Tension Slider ---
+      const tensionBarX = layout.tensionZoneX + 12;
+      const tensionBarWidth = layout.tensionZoneWidth - 24;
+      const tensionBarHeight = 10;
+      const tensionBarY = stripCenterY - tensionBarHeight / 2;
 
       // Tension bar background
       ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
       ctx.beginPath();
-      ctx.roundRect(tensionBarX, tensionBarY, tensionBarWidth, tensionBarHeight, 6);
+      ctx.roundRect(tensionBarX, tensionBarY, tensionBarWidth, tensionBarHeight, 5);
       ctx.fill();
 
-      // Tension bar fill
+      // Tension bar fill with gradient
       const tensionFillWidth = (tension / 100) * tensionBarWidth;
-      if (tensionFillWidth > 0) {
+      if (tensionFillWidth > 2) {
         const tensionGradient = ctx.createLinearGradient(tensionBarX, 0, tensionBarX + tensionBarWidth, 0);
         tensionGradient.addColorStop(0, '#22d3ee');
         tensionGradient.addColorStop(0.5, '#f97316');
         tensionGradient.addColorStop(1, '#ef4444');
         ctx.fillStyle = tensionGradient;
         ctx.beginPath();
-        ctx.roundRect(tensionBarX, tensionBarY, tensionFillWidth, tensionBarHeight, 6);
+        ctx.roundRect(tensionBarX, tensionBarY, tensionFillWidth, tensionBarHeight, 5);
         ctx.fill();
       }
 
@@ -320,31 +433,73 @@ export function SequencerCanvas() {
       const handleX = tensionBarX + tensionFillWidth;
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(handleX, tensionBarY + tensionBarHeight / 2, 8, 0, Math.PI * 2);
+      ctx.arc(Math.max(tensionBarX + 6, Math.min(handleX, tensionBarX + tensionBarWidth - 6)), stripCenterY, 7, 0, Math.PI * 2);
       ctx.fill();
 
-      // DROP button
-      const dropButtonX = dimensions.width - tensionBarPadding - 70;
-      const dropButtonY = tensionBarY - 6;
-      const dropButtonWidth = 60;
-      const dropButtonHeight = 24;
+      // --- ZONE 4: DROP Button ---
+      const dropButtonY = stripCenterY - 14;
+      const dropButtonHeight = 28;
       const dropFlash = dropFlashRef.current;
 
       ctx.save();
       ctx.fillStyle = dropFlash > 0.1 ? '#ffffff' : '#ef4444';
       if (perf.glowEnabled) {
         ctx.shadowColor = '#ef4444';
-        ctx.shadowBlur = perf.shadowBlur + (dropFlash * perf.shadowBlur * 2);
+        ctx.shadowBlur = perf.shadowBlur * 0.5 + (dropFlash * perf.shadowBlur * 2);
       }
       ctx.beginPath();
-      ctx.roundRect(dropButtonX, dropButtonY, dropButtonWidth, dropButtonHeight, 4);
+      ctx.roundRect(layout.dropButtonX, dropButtonY, layout.dropButtonWidth, dropButtonHeight, 4);
       ctx.fill();
       ctx.fillStyle = dropFlash > 0.1 ? '#ef4444' : '#ffffff';
-      ctx.font = 'bold 12px monospace';
+      ctx.font = 'bold 10px monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.shadowBlur = 0;
-      ctx.fillText('DROP', dropButtonX + dropButtonWidth / 2, dropButtonY + dropButtonHeight / 2);
+      ctx.fillText('DROP', layout.dropButtonX + layout.dropButtonWidth / 2, stripCenterY);
+      ctx.restore();
+
+      // --- ZONE 5: Tempo Display ---
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 16px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(tempo), layout.tempoZoneX + layout.tempoZoneWidth / 2, stripCenterY - 4);
+      ctx.fillStyle = '#666666';
+      ctx.font = '8px monospace';
+      ctx.fillText('BPM', layout.tempoZoneX + layout.tempoZoneWidth / 2, stripCenterY + 12);
+      ctx.restore();
+
+      // Tempo +/- buttons
+      const tempoBtnSize = 18;
+      const tempoBtnY = stripCenterY - tempoBtnSize / 2;
+
+      // Minus button
+      ctx.save();
+      ctx.strokeStyle = '#666666';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(layout.tempoZoneX + 4, tempoBtnY, tempoBtnSize, tempoBtnSize, 3);
+      ctx.stroke();
+      ctx.fillStyle = '#888888';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('-', layout.tempoZoneX + 4 + tempoBtnSize / 2, stripCenterY);
+      ctx.restore();
+
+      // Plus button
+      ctx.save();
+      ctx.strokeStyle = '#666666';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(layout.tempoZoneX + layout.tempoZoneWidth - tempoBtnSize - 4, tempoBtnY, tempoBtnSize, tempoBtnSize, 3);
+      ctx.stroke();
+      ctx.fillStyle = '#888888';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('+', layout.tempoZoneX + layout.tempoZoneWidth - tempoBtnSize / 2 - 4, stripCenterY);
       ctx.restore();
 
       // === DRAW PLAYHEAD TRAIL (behind everything) ===
@@ -698,7 +853,7 @@ export function SequencerCanvas() {
 
     animationId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationId);
-  }, [dimensions, grid, playhead, getLayout, mutedLanes, unlockedLanes, activeLanes, currentCategory, tension]);
+  }, [dimensions, grid, playhead, getLayout, mutedLanes, unlockedLanes, activeLanes, currentCategory, tension, layers, activeLayerIndex, canAddLayer]);
 
   // Handle tap interactions
   const handlePointerDown = useCallback(async (event) => {
@@ -711,41 +866,79 @@ export function SequencerCanvas() {
 
     const layout = getLayout();
 
-    // Check for category tab tap
-    if (y >= layout.tabsTop && y < layout.tabsTop + layout.tabsHeight) {
-      const tabWidth = dimensions.width / CATEGORY_ORDER.length;
-      const tabIndex = Math.floor(x / tabWidth);
-      if (tabIndex >= 0 && tabIndex < CATEGORY_ORDER.length) {
-        setCurrentCategory(CATEGORY_ORDER[tabIndex]);
+    // === UNIFIED CONTROL STRIP INTERACTIONS ===
+    if (y >= 0 && y < layout.controlStripHeight) {
+      const stripCenterY = layout.controlStripHeight / 2;
+
+      // Zone 1: Category tabs
+      if (x < layout.categoryZoneWidth) {
+        const tabWidth = layout.categoryZoneWidth / CATEGORY_ORDER.length;
+        const tabIndex = Math.floor(x / tabWidth);
+        if (tabIndex >= 0 && tabIndex < CATEGORY_ORDER.length) {
+          setCurrentCategory(CATEGORY_ORDER[tabIndex]);
+        }
+        return;
       }
-      return;
-    }
 
-    // Check for tension bar drag
-    const tensionBarPadding = 20;
-    const tensionBarWidth = dimensions.width - tensionBarPadding * 2 - 100;
-    const tensionBarHeight = 12;
-    const tensionBarX = tensionBarPadding;
-    const tensionBarY = layout.tensionTop + (layout.tensionHeight - tensionBarHeight) / 2;
+      // Zone 2: Layer dots
+      if (x >= layout.layerDotsZoneX && x < layout.layerDotsZoneX + layout.layerDotsZoneWidth) {
+        const dotsStartX = layout.layerDotsZoneX + 15;
+        for (let i = 0; i < MAX_LAYERS; i++) {
+          const dotX = dotsStartX + i * LAYER_INDICATOR_SPACING;
+          const distance = Math.sqrt(Math.pow(x - dotX, 2) + Math.pow(y - stripCenterY, 2));
 
-    if (y >= tensionBarY - 15 && y <= tensionBarY + tensionBarHeight + 15 &&
-        x >= tensionBarX && x <= tensionBarX + tensionBarWidth) {
-      isDraggingTensionRef.current = true;
-      const newTension = Math.max(0, Math.min(100, ((x - tensionBarX) / tensionBarWidth) * 100));
-      setTension(newTension);
-      return;
-    }
+          if (distance <= LAYER_INDICATOR_RADIUS + 8) {
+            const layer = layers[i];
+            if (layer) {
+              selectLayer(layer.id);
+            }
+            return;
+          }
+        }
+        return;
+      }
 
-    // Check for DROP button tap
-    const dropButtonX = dimensions.width - tensionBarPadding - 70;
-    const dropButtonY = tensionBarY - 6;
-    const dropButtonWidth = 60;
-    const dropButtonHeight = 24;
+      // Zone 3: Tension slider
+      const tensionBarX = layout.tensionZoneX + 12;
+      const tensionBarWidth = layout.tensionZoneWidth - 24;
+      if (x >= tensionBarX - 10 && x <= tensionBarX + tensionBarWidth + 10) {
+        isDraggingTensionRef.current = true;
+        const newTension = Math.max(0, Math.min(100, ((x - tensionBarX) / tensionBarWidth) * 100));
+        setTension(newTension);
+        return;
+      }
 
-    if (x >= dropButtonX && x <= dropButtonX + dropButtonWidth &&
-        y >= dropButtonY && y <= dropButtonY + dropButtonHeight) {
-      triggerDrop();
-      dropFlashRef.current = 1;
+      // Zone 4: DROP button
+      const dropButtonY = stripCenterY - 14;
+      const dropButtonHeight = 28;
+      if (x >= layout.dropButtonX && x <= layout.dropButtonX + layout.dropButtonWidth &&
+          y >= dropButtonY && y <= dropButtonY + dropButtonHeight) {
+        triggerDrop();
+        dropFlashRef.current = 1;
+        return;
+      }
+
+      // Zone 5: Tempo controls
+      if (x >= layout.tempoZoneX) {
+        const tempoBtnSize = 18;
+        const tempoBtnY = stripCenterY - tempoBtnSize / 2;
+
+        // Minus button
+        if (x >= layout.tempoZoneX + 4 && x <= layout.tempoZoneX + 4 + tempoBtnSize &&
+            y >= tempoBtnY && y <= tempoBtnY + tempoBtnSize) {
+          decreaseTempo();
+          return;
+        }
+
+        // Plus button
+        if (x >= layout.tempoZoneX + layout.tempoZoneWidth - tempoBtnSize - 4 &&
+            x <= layout.tempoZoneX + layout.tempoZoneWidth - 4 &&
+            y >= tempoBtnY && y <= tempoBtnY + tempoBtnSize) {
+          increaseTempo();
+          return;
+        }
+      }
+
       return;
     }
 
@@ -833,7 +1026,7 @@ export function SequencerCanvas() {
     if (!unlockedLanes[laneId]) return;
 
     toggleStep(laneId, step);
-  }, [ensureAudioReady, getLayout, dimensions, toggleStep, toggleMute, clearLane, cyclePattern, toggleActive, unlockedLanes, setCurrentCategory, setTension, triggerDrop, playStab]);
+  }, [ensureAudioReady, getLayout, dimensions, toggleStep, toggleMute, clearLane, cyclePattern, toggleActive, unlockedLanes, setCurrentCategory, setTension, triggerDrop, playStab, layers, selectLayer, lockAndBuild, canAddLayer]);
 
   // Handle pointer move for tension slider
   const handlePointerMove = useCallback((event) => {
@@ -841,14 +1034,14 @@ export function SequencerCanvas() {
 
     const rect = canvasRef.current.getBoundingClientRect();
     const x = event.clientX - rect.left;
+    const layout = getLayout();
 
-    const tensionBarPadding = 20;
-    const tensionBarWidth = dimensions.width - tensionBarPadding * 2 - 100;
-    const tensionBarX = tensionBarPadding;
+    const tensionBarX = layout.tensionZoneX + 12;
+    const tensionBarWidth = layout.tensionZoneWidth - 24;
 
     const newTension = Math.max(0, Math.min(100, ((x - tensionBarX) / tensionBarWidth) * 100));
     setTension(newTension);
-  }, [dimensions, setTension]);
+  }, [getLayout, setTension]);
 
   // Handle pointer up
   const handlePointerUp = useCallback(() => {
@@ -878,6 +1071,18 @@ export function SequencerCanvas() {
     decreaseTempo();
   }, [ensureAudioReady, decreaseTempo]);
 
+  // Handle LOCK+BUILD button click
+  const handleLockBuild = useCallback(async () => {
+    await ensureAudioReady();
+    if (canAddLayer) {
+      const newLayer = lockAndBuild();
+      if (newLayer) {
+        lockBuildFlashRef.current = 1;
+        newLayerPulseRef.current = 1;
+      }
+    }
+  }, [ensureAudioReady, canAddLayer, lockAndBuild]);
+
   return (
     <div className="relative w-full h-full">
       <canvas
@@ -892,49 +1097,40 @@ export function SequencerCanvas() {
         style={{ display: 'block', touchAction: 'none' }}
       />
 
-      {/* Tempo Control */}
-      <div className="absolute top-[108px] right-4 flex items-center gap-2 bg-gray-900/80 rounded-lg px-3 py-2 border border-gray-700">
+      {/* Bottom Controls: LOCK+BUILD and Play/Pause */}
+      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4">
+        {/* LOCK+BUILD Button */}
         <button
-          onClick={handleTempoDown}
-          className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 active:scale-95 transition-all"
-          aria-label="Decrease tempo"
+          onClick={handleLockBuild}
+          disabled={!canAddLayer}
+          className={`h-10 px-4 rounded-lg font-mono text-xs font-bold transition-all active:scale-95 ${
+            canAddLayer
+              ? 'bg-cyan-500 text-black hover:bg-cyan-400'
+              : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+          }`}
+          aria-label="Lock current layer and build new one"
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M19 13H5v-2h14v2z" />
-          </svg>
+          {canAddLayer ? 'LOCK + BUILD' : 'MAX LAYERS'}
         </button>
-        <div className="text-center min-w-[60px]">
-          <div className="text-white font-mono text-lg">{tempo}</div>
-          <div className="text-gray-500 text-xs">BPM</div>
-        </div>
+
+        {/* Play/Pause Button */}
         <button
-          onClick={handleTempoUp}
-          className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 active:scale-95 transition-all"
-          aria-label="Increase tempo"
+          onClick={handlePlayPause}
+          className="w-14 h-14 rounded-full bg-gray-800/80 border border-gray-600 flex items-center justify-center hover:bg-gray-700/80 active:scale-95 transition-all"
+          aria-label={isPlaying ? 'Pause' : 'Play'}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
-          </svg>
+          {isPlaying ? (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+              <rect x="6" y="4" width="4" height="16" rx="1" />
+              <rect x="14" y="4" width="4" height="16" rx="1" />
+            </svg>
+          ) : (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
         </button>
       </div>
-
-      {/* Play/Pause Button */}
-      <button
-        onClick={handlePlayPause}
-        className="absolute bottom-6 left-1/2 -translate-x-1/2 w-14 h-14 rounded-full bg-gray-800/80 border border-gray-600 flex items-center justify-center hover:bg-gray-700/80 active:scale-95 transition-all"
-        aria-label={isPlaying ? 'Pause' : 'Play'}
-      >
-        {isPlaying ? (
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
-            <rect x="6" y="4" width="4" height="16" rx="1" />
-            <rect x="14" y="4" width="4" height="16" rx="1" />
-          </svg>
-        ) : (
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
-            <path d="M8 5v14l11-7z" />
-          </svg>
-        )}
-      </button>
     </div>
   );
 }

@@ -232,6 +232,19 @@ export const BUILD_DROP = {
 // Max velocity for audio calculations
 export const MAX_VELOCITY = 15;
 
+// === LAYER SYSTEM ===
+export const MAX_LAYERS = 2;
+export const LAYER_INDICATOR_RADIUS = 8;
+export const LAYER_INDICATOR_SPACING = 20;
+
+// === UNIFIED CONTROL STRIP (replaces separate rows) ===
+export const CONTROL_STRIP_HEIGHT = 56;
+// Gain reduction per layer count (in dB) to prevent clipping
+export const LAYER_GAIN_DB = {
+  1: 0,     // Single layer: full volume
+  2: -3,    // Two layers: -3dB each
+};
+
 // === COLOR SYSTEM — "Neon Noir" ===
 export const COLORS = {
   // === WORLD (The Void) ===
@@ -273,5 +286,14 @@ export const COLORS = {
     textPrimary: '#e2e8f0',
     textSecondary: '#94a3b8',
     laneName: 'rgba(255, 255, 255, 0.6)',
+  },
+
+  // === LAYER INDICATORS ===
+  layer: {
+    empty: 'rgba(255, 255, 255, 0.2)',      // ○ Empty slot
+    active: '#22d3ee',                       // ● Active (cyan)
+    locked: '#f97316',                       // ◆ Locked (orange)
+    lockBuildButton: '#22d3ee',              // LOCK+BUILD button
+    lockBuildDisabled: '#4a5568',            // Disabled button
   },
 };

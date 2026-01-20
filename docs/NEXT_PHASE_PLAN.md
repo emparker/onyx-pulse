@@ -1,26 +1,26 @@
 # Onyx Pulse — Next Phase Plan
 
 > **Created:** January 2026
-> **Status:** Ready for implementation
+> **Last Updated:** January 2026
 
-## Roadmap Priority (Confirmed)
+## Roadmap Progress
 
 ```
-Phase 1: Pads (This PR)  →  Phase 2: Layered Scenes  →  Phase 3: Recording/Share
+Phase 1: Pads ✅ COMPLETE  →  Phase 2: Layered Scenes ✅ COMPLETE  →  Phase 3: Recording/Share
 ```
 
 ---
 
-## Phase 1: Stab Pad Improvements (Current Focus)
+## Phase 1: Stab Pad Improvements ✅ COMPLETE
 
-### Sound Changes
+### What Was Implemented
 
-| Position | Current | New | Description |
-|----------|---------|-----|-------------|
-| Top-Left | ZAP | **LASER** | Cleaner pitch-down sweep (C5→C2), more musical |
-| Top-Right | IMPACT | **IMPACT** | Keep but boost volume significantly |
-| Bottom-Left | VOCAL | **REVERSE** | Reverse cymbal/reverb swell (fade IN then cut) |
-| Bottom-Right | RISER | **RISER** | Keep as-is |
+| Position | Name | Description |
+|----------|------|-------------|
+| Top-Left | **LASER** | Clean pitch-down sweep (C5→C2), FM synth |
+| Top-Right | **IMPACT** | Boosted volume, punchy membrane + noise |
+| Bottom-Left | **REVERSE** | Reverse cymbal swell (fade IN then cut) |
+| Bottom-Right | **RISER** | 2-bar filter sweep |
 
 ### Layout: 2x2 Grid
 
@@ -31,107 +31,85 @@ Phase 1: Pads (This PR)  →  Phase 2: Layered Scenes  →  Phase 3: Recording/S
 └─────────────────────────────────────────────┘
 ```
 
-**Rationale:** Top row = instant hits, bottom row = sweeping/building sounds
+**STAB_BAR_HEIGHT:** Increased to 100px for 2x2 grid
 
-### Implementation
+---
 
-#### 1. Update Constants (`src/engine/constants.js`)
+## Phase 2: Layered Scenes ✅ COMPLETE
 
-```javascript
-export const STABS = {
-  laser: { name: 'LASER', color: '#facc15' },   // was zap
-  impact: { name: 'IMPACT', color: '#ef4444' },
-  reverse: { name: 'REVERSE', color: '#8b5cf6' }, // was vocal
-  riser: { name: 'RISER', color: '#06b6d4' },
-};
+### What Was Implemented
 
-export const STAB_ORDER = ['laser', 'impact', 'reverse', 'riser'];
-// Grid: [0,1] = top row, [2,3] = bottom row
+Users can stack up to **2 layers** of patterns that play simultaneously.
+
+#### Core UX Flow
+
+1. User creates something great on the grid
+2. Taps **LOCK + BUILD** button
+3. Current layer freezes (locked, still playing)
+4. New empty layer appears on top for editing
+5. Both layers play together in sync
+6. Tap a locked layer's indicator dot to unlock and edit it again
+
+#### UI Layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  [DRUMS] [BASS] [MELODIC]  ● ◆  ═══●═══════  [DROP] [BPM] │  ← Unified control strip
+├─────────────────────────────────────────────────────────────┤
+│   KICK  ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○   ← Active layer  │
+│   HAT   ● ○ ● ○ ● ○ ● ○ ● ○ ● ○ ● ○ ● ○                   │
+│   ...                                                       │
+├─────────────────────────────────────────────────────────────┤
+│ [LASER] [IMPACT]    [LOCK+BUILD]    [▶/❚❚]                 │
+│ [REVERSE] [RISER]                                          │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-#### 2. Update Audio Engine (`src/engine/audio.js`)
+#### Layer Indicator States (2 dots max)
 
-**LASER** (replace zapSynth):
-- `FMSynth` with pitch envelope
-- Start at C5, sweep down to C2
-- Short decay (~150ms)
-- Harmonicity: 4 (less harsh than current zap)
+- `○` Empty slot (no layer)
+- `●` Active layer (cyan, currently editing)
+- `◆` Locked layer (orange, playing but frozen)
 
-**IMPACT** (boost existing):
-- Increase volume: -4dB → 0dB (membrane), -8dB → -4dB (noise)
-- Extend decay for more "thump"
-- Trigger sidechain pump (already does this)
+### Key Design Decisions
 
-**REVERSE** (replace vocalSynth):
-- `NoiseSynth` with reversed amplitude envelope
-- Attack: 0.3s (fade IN)
-- Decay: 0.05s (quick cut)
-- Lowpass filter sweep UP during attack
-- Creates "sucking in" effect before drops
+| Decision | Rationale |
+|----------|-----------|
+| **Max 2 layers** (not 3) | 3 layers caused audio artifacts ("popcorn sound"). 2 layers keeps audio clean. |
+| **Single shared tempo** | Per-layer BPM would break "impossible to sound bad" principle. Layers drift out of sync. |
+| **Unified control strip** (56px) | Consolidated 3 rows into 1, cleaner UI, more space for lanes. |
+| **LOCK+BUILD at bottom** | Near play/pause for easy thumb access on mobile. |
+| **Auto-gain: -3dB for 2 layers** | Prevents clipping when layers overlap. |
+| **Kick envelope tightened** | Shortened release (1.4s → 0.3s) to prevent overlapping artifacts. |
 
-**RISER** — No changes
-
-#### 3. Update Canvas (`src/components/Canvas/SequencerCanvas.jsx`)
-
-Change from 1x4 horizontal to 2x2 grid:
-
-```javascript
-// Layout calculation
-const stabCols = 2;
-const stabRows = 2;
-const stabButtonWidth = (gridWidth - gap) / stabCols;
-const stabButtonHeight = (STAB_BAR_HEIGHT - gap * 2) / stabRows;
-
-// Position calculation
-const col = index % stabCols;  // 0 or 1
-const row = Math.floor(index / stabCols);  // 0 or 1
-const stabX = LANE_PADDING + col * (stabButtonWidth + gap);
-const stabY = layout.stabBarTop + row * (stabButtonHeight + gap);
-```
-
-May need to increase `STAB_BAR_HEIGHT` from 70px to ~100px for 2 rows.
-
-### Files to Modify
+### Files Modified
 
 | File | Changes |
 |------|---------|
-| `src/engine/constants.js` | Rename stabs, update STAB_ORDER, increase STAB_BAR_HEIGHT |
-| `src/engine/audio.js` | Replace zapSynth→laserSynth, vocalSynth→reverseSynth, boost impact |
-| `src/components/Canvas/SequencerCanvas.jsx` | 2x2 grid rendering + hit detection |
+| `src/engine/constants.js` | `MAX_LAYERS=2`, `LAYER_GAIN_DB`, `CONTROL_STRIP_HEIGHT`, layer colors |
+| `src/engine/sequencer.js` | Refactored to `layers[]` array with lock/unlock/create functions |
+| `src/engine/audio.js` | Layer gain node, `updateLayerGains()`, tightened kick envelope |
+| `src/hooks/useSequencer.js` | Layer state sync, multi-layer playback with deduplication |
+| `src/components/Canvas/SequencerCanvas.jsx` | Unified control strip, layer dots, LOCK+BUILD button |
+
+### Verification Checklist
+
+- [x] Create up to 2 layers without errors
+- [x] All layers play simultaneously in sync
+- [x] Locked layers show ◆ indicator, can't be edited
+- [x] Tap locked layer dot → unlocks and becomes active
+- [x] LOCK+BUILD button disabled at 2 layers
+- [x] Audio doesn't clip with 2 layers (auto-gain working)
+- [x] No "popcorn" sound artifacts with kick
+- [x] Tempo/tension/DROP affects all layers
+- [x] Stabs work independently of layers
+- [x] Category switching works on active layer only
+- [x] Clear lane only affects active layer
+- [x] Pattern lanes (wobble, chord, lead, arp) work per-layer
 
 ---
 
-## Phase 2: Layered Scenes
-
-The "game loop" from BRAINSTORM.md — enables creative expansion without complexity.
-
-### Core Concept: LOCK + BUILD
-
-1. User creates something great
-2. Hits LOCK + BUILD button
-3. Current lanes freeze as background layer
-4. Playback continues seamlessly
-5. New fresh lanes appear on top
-6. Old layer untouchable unless unlocked
-
-### Constraints (Enforced Invisibly)
-
-- Max 3-4 layers total
-- Auto EQ per layer (frequency slotting)
-- Auto ducking for bass/kick dominance
-- All layers share same tempo, bar length, phase
-
-### Layer Navigation
-
-Simple stack view:
-- Play/mute toggle per layer
-- Tiny visual preview
-- Lock icon
-- No timeline, no clips
-
----
-
-## Phase 3: Recording & Share
+## Phase 3: Recording & Share (Future)
 
 **Approach: Record on Play** (not always-on buffer)
 
@@ -144,12 +122,18 @@ Rationale: Simpler implementation, lower battery/memory impact, achieves same go
 - One-tap export when satisfied
 - No decisions, no dialogs
 
-### Features
+### Planned Features
 
-- ❤️ save button (exports current recording)
+- Save button (exports current recording)
 - MP4 output with reactive visuals
 - Brand identity baked in
-- Instagram/TikTok friendly format
+- Instagram/TikTok friendly format (9:16 vertical)
+
+### Open Questions
+
+- Web Audio recording vs. canvas + audio merge?
+- File size limits for social sharing?
+- Offline storage before export?
 
 ---
 
@@ -163,19 +147,4 @@ Rationale: Simpler implementation, lower battery/memory impact, achieves same go
 
 ---
 
-## Verification Checklist (Phase 1)
-
-After pad implementation:
-- [ ] LASER: Musical pitch-down sweep, satisfying zap
-- [ ] IMPACT: Noticeably louder, punchy, no clipping
-- [ ] REVERSE: Clear "swell in" effect, good for builds
-- [ ] RISER: Still works as before
-- [ ] 2x2 grid renders correctly (mobile + desktop)
-- [ ] Touch targets large enough on mobile
-- [ ] Visual flash feedback on all pads
-- [ ] No overlap with play button below
-- [ ] Build passes with no errors
-
----
-
-*This document serves as the development roadmap for the next phase of Onyx Pulse.*
+*This document serves as the development roadmap for Onyx Pulse.*

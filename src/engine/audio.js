@@ -5,6 +5,7 @@ import {
   CHORD_PROGRESSIONS,
   LEAD_PHRASES,
   ARP_NOTES,
+  LAYER_GAIN_DB,
 } from './constants.js';
 import { initClock, disposeClock, emitSidechain, getTempo } from './clock.js';
 
@@ -38,6 +39,8 @@ let snareRollLoop = null;
 let sidechainGain = null;
 let masterCompressor = null;
 let masterLimiter = null;
+let layerGain = null;  // Gain node for layer auto-EQ
+let currentLayerCount = 1;  // Track current layer count for gain adjustment
 let isInitialized = false;
 
 // Note indices for cycling through scales/patterns
@@ -76,12 +79,15 @@ export async function initAudio() {
 
     masterLimiter = new Tone.Limiter(-1).connect(masterCompressor);
 
+    // Layer gain node for auto-EQ based on layer count
+    layerGain = new Tone.Gain(1).connect(masterLimiter);
+
     // Master highpass filter for build/drop system
     masterHighpass = new Tone.Filter({
       frequency: 20,
       type: 'highpass',
       rolloff: -24,
-    }).connect(masterLimiter);
+    }).connect(layerGain);
 
     // === SIDECHAIN GAIN ===
     // All non-kick sounds route through this for the "pump" effect
@@ -94,9 +100,9 @@ export async function initAudio() {
       oscillator: { type: 'sine' },
       envelope: {
         attack: 0.001,
-        decay: 0.4,
-        sustain: 0.01,
-        release: 1.4,
+        decay: 0.25,
+        sustain: 0,
+        release: 0.3,
       },
     }).connect(masterHighpass); // Kick bypasses sidechain
 
@@ -227,7 +233,7 @@ export async function initAudio() {
       },
     }).connect(sidechainGain);
 
-    chordSynth.volume.value = -12;
+    chordSynth.volume.value = -6;
 
     // === LEAD SYNTH (Mono lead for hooks) ===
     leadSynth = new Tone.MonoSynth({
@@ -686,6 +692,34 @@ export function playReverse() {
   reverseSynth.triggerAttackRelease('2n', now, 0.9);
 }
 
+// === LAYER GAIN SYSTEM ===
+
+/**
+ * Update layer gain based on total layer count
+ * Applies gain reduction to prevent clipping when multiple layers play
+ * @param {number} layerCount - Number of active layers (1-3)
+ */
+export function updateLayerGains(layerCount) {
+  if (!layerGain) return;
+
+  currentLayerCount = Math.max(1, Math.min(3, layerCount));
+  const gainDb = LAYER_GAIN_DB[currentLayerCount] || 0;
+  const gainLinear = Math.pow(10, gainDb / 20);
+
+  // Smooth transition to new gain
+  layerGain.gain.rampTo(gainLinear, 0.05);
+
+  console.log(`Layer gain updated: ${currentLayerCount} layers, ${gainDb}dB`);
+}
+
+/**
+ * Get current layer count
+ * @returns {number} Current layer count
+ */
+export function getCurrentLayerCount() {
+  return currentLayerCount;
+}
+
 // === BUILD/DROP SYSTEM ===
 
 /**
@@ -756,7 +790,7 @@ export function disposeAudio() {
   ];
 
   const filters = [hatFilter, clapFilter, riserFilter, reverseFilter, masterHighpass];
-  const other = [wobbleLFO, sidechainGain, masterCompressor, masterLimiter];
+  const other = [wobbleLFO, sidechainGain, masterCompressor, masterLimiter, layerGain];
 
   [...synths, ...filters, ...other].forEach(node => {
     if (node) {
@@ -787,8 +821,10 @@ export function disposeAudio() {
   sidechainGain = null;
   masterCompressor = null;
   masterLimiter = null;
+  layerGain = null;
 
   isInitialized = false;
+  currentLayerCount = 1;
   subNoteIndex = 0;
   percPitchIndex = 0;
   leadNoteIndex = 0;

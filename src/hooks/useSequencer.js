@@ -25,6 +25,15 @@ import {
   getPatternIndices,
   cyclePattern as cyclePatternFn,
   getPatternName,
+  // Layer functions
+  getAllLayers,
+  getLayerCount,
+  getActiveLayerIndex,
+  getActiveLayer,
+  lockAndBuild as lockAndBuildFn,
+  setActiveLayer as setActiveLayerFn,
+  deleteLayer as deleteLayerFn,
+  isLayerLocked,
 } from '../engine/sequencer.js';
 import {
   onStep,
@@ -64,6 +73,7 @@ import {
   startSnareRoll,
   stopSnareRoll,
   triggerDrop,
+  updateLayerGains,
 } from '../engine/audio.js';
 import {
   LANES,
@@ -71,6 +81,7 @@ import {
   PATTERN_LANES,
   LANES_BY_CATEGORY,
   BUILD_DROP,
+  MAX_LAYERS,
 } from '../engine/constants.js';
 
 // Map synth names to play functions
@@ -97,20 +108,43 @@ export function useSequencer() {
   const [currentCategory, setCurrentCategoryState] = useState('drums');
   const [tempo, setTempo] = useState(getTempo());
   const [tension, setTensionState] = useState(0);
+
+  // Layer state
+  const [layers, setLayers] = useState([]);
+  const [activeLayerIndex, setActiveLayerIndex] = useState(0);
+
   const stepUnsubscribeRef = useRef(null);
   const hitLanesRef = useRef([]); // Lanes that were hit this step (for visual feedback)
-  const wobbleActiveRef = useRef(false);
+  const wobbleActiveRef = useRef({}); // Track wobble state per layer: { layerId: boolean }
+
+  // Sync layer state from sequencer
+  const syncLayerState = useCallback(() => {
+    const allLayers = getAllLayers();
+    setLayers(allLayers);
+    setActiveLayerIndex(getActiveLayerIndex());
+
+    // Update audio layer gains based on layer count
+    updateLayerGains(allLayers.length);
+
+    // Sync active layer's state to React
+    const activeLayer = getActiveLayer();
+    if (activeLayer) {
+      setGrid({ ...activeLayer.grid });
+      setMutedLanes({ ...activeLayer.mutedLanes });
+      setActiveLanes({ ...activeLayer.activeLanes });
+      setPatternIndices({ ...activeLayer.patternIndices });
+    }
+  }, []);
 
   // Initialize sequencer on mount
   useEffect(() => {
     if (!isSequencerReady()) {
       initSequencer();
     }
-    setGrid({ ...getGrid() });
-    setMutedLanes({ ...getMutedLanes() });
+
+    // Initial sync
+    syncLayerState();
     setUnlockedLanes({ ...getUnlockedLanes() });
-    setActiveLanes({ ...getActiveLanes() });
-    setPatternIndices({ ...getPatternIndices() });
     setCurrentCategoryState(getCurrentCategory());
 
     // Subscribe to clock step events
@@ -118,51 +152,93 @@ export function useSequencer() {
       const { step, isDownbeat } = stepInfo;
       setPlayhead(step);
 
-      // Get current state
-      const currentGrid = getGrid();
-      const currentMuted = getMutedLanes();
-      const currentActive = getActiveLanes();
-      const hitLanes = [];
+      // Get all layers
+      const allLayers = getAllLayers();
 
-      // Trigger grid lane sounds
-      GRID_LANES.forEach(lane => {
-        if (currentGrid[lane] && currentGrid[lane][step] && !currentMuted[lane]) {
-          hitLanes.push(lane);
-          const playFn = SYNTH_PLAYERS[lane];
-          if (playFn) {
-            playFn();
+      // Collect which lanes should play (deduplicated across all layers)
+      // This prevents triggering the same synth multiple times on the same step
+      const gridLanesToPlay = new Set();
+      const patternLanesToPlay = new Set();
+
+      allLayers.forEach(layer => {
+        const { id: layerId, grid: layerGrid, activeLanes: layerActiveLanes, mutedLanes: layerMutedLanes } = layer;
+
+        // Collect grid lanes that should play
+        GRID_LANES.forEach(lane => {
+          if (layerGrid[lane] && layerGrid[lane][step] && !layerMutedLanes[lane]) {
+            gridLanesToPlay.add(lane);
           }
+        });
+
+        // Collect pattern lanes that should play
+        PATTERN_LANES.forEach(lane => {
+          if (layerActiveLanes[lane] && !layerMutedLanes[lane]) {
+            patternLanesToPlay.add(lane);
+          }
+        });
+
+        // Handle wobble state per layer
+        const wobbleKey = `layer_${layerId}`;
+        const wobbleIsActive = layerActiveLanes['wobble'] && !layerMutedLanes['wobble'];
+        if (wobbleIsActive && !wobbleActiveRef.current[wobbleKey]) {
+          wobbleActiveRef.current[wobbleKey] = true;
+        } else if (!wobbleIsActive && wobbleActiveRef.current[wobbleKey]) {
+          wobbleActiveRef.current[wobbleKey] = false;
         }
       });
 
-      // Handle pattern lanes
-      PATTERN_LANES.forEach(lane => {
-        if (!currentActive[lane] || currentMuted[lane]) return;
+      // Now play each unique grid lane once
+      gridLanesToPlay.forEach(lane => {
+        const playFn = SYNTH_PLAYERS[lane];
+        if (playFn) {
+          playFn();
+        }
+      });
 
+      // Play pattern lanes (each only once)
+      patternLanesToPlay.forEach(lane => {
         switch (lane) {
           case 'chord':
             // Chord plays on beat 1 of each bar
             if (isDownbeat) {
               playChord();
-              hitLanes.push(lane);
             }
             break;
           case 'lead':
             // Lead plays on every 16th note
             playLead();
-            hitLanes.push(lane);
             break;
           case 'arp':
             // Arp plays on every 16th note
             playArp();
-            hitLanes.push(lane);
             break;
-          // Wobble is continuous, handled separately
+          case 'wobble':
+            // Start wobble if any layer has it active
+            if (!Object.values(wobbleActiveRef.current).some(v => v)) {
+              // Wobble wasn't active before, start it now
+            }
+            break;
         }
       });
 
+      // Handle wobble start/stop based on collective state
+      const anyWobbleActive = allLayers.some(l =>
+        l.activeLanes['wobble'] && !l.mutedLanes['wobble']
+      );
+      const wasWobbleActive = Object.values(wobbleActiveRef.current).some(v => v);
+
+      if (anyWobbleActive && !wasWobbleActive) {
+        startWobble();
+      } else if (!anyWobbleActive && wasWobbleActive) {
+        stopWobble();
+        // Clear all wobble states
+        Object.keys(wobbleActiveRef.current).forEach(key => {
+          wobbleActiveRef.current[key] = false;
+        });
+      }
+
       // Store hit lanes for visual feedback
-      hitLanesRef.current = hitLanes;
+      hitLanesRef.current = [...gridLanesToPlay, ...patternLanesToPlay];
 
       // Reset sub pattern on downbeat
       if (isDownbeat) {
@@ -176,6 +252,37 @@ export function useSequencer() {
       }
       disposeSequencer();
     };
+  }, [syncLayerState]);
+
+  // === LAYER FUNCTIONS ===
+
+  // Lock current layer and create a new one
+  const lockAndBuild = useCallback(() => {
+    const newLayer = lockAndBuildFn();
+    if (newLayer) {
+      syncLayerState();
+    }
+    return newLayer;
+  }, [syncLayerState]);
+
+  // Select a layer (tapping on its indicator)
+  const selectLayer = useCallback((layerId) => {
+    setActiveLayerFn(layerId);
+    syncLayerState();
+  }, [syncLayerState]);
+
+  // Delete a layer
+  const deleteLayerById = useCallback((layerId) => {
+    const success = deleteLayerFn(layerId);
+    if (success) {
+      syncLayerState();
+    }
+    return success;
+  }, [syncLayerState]);
+
+  // Check if at max layers
+  const canAddLayer = useCallback(() => {
+    return getLayerCount() < MAX_LAYERS;
   }, []);
 
   // === GRID LANE FUNCTIONS ===
@@ -183,28 +290,30 @@ export function useSequencer() {
   // Toggle a step on/off
   const toggleStep = useCallback((lane, step) => {
     toggleStepFn(lane, step);
-    setGrid({ ...getGrid() });
-    setActiveLanes({ ...getActiveLanes() });
-  }, []);
+    syncLayerState();
+  }, [syncLayerState]);
 
   // Clear a single lane
   const clearLanePattern = useCallback((lane) => {
     clearLane(lane);
-    setGrid({ ...getGrid() });
-  }, []);
+    syncLayerState();
+  }, [syncLayerState]);
 
   // Clear entire grid
   const clearAllPatterns = useCallback(() => {
     clearAllFn();
-    setGrid({ ...getGrid() });
-    setActiveLanes({ ...getActiveLanes() });
+    syncLayerState();
     resetSubPattern();
-    // Stop wobble if active
-    if (wobbleActiveRef.current) {
-      stopWobble();
-      wobbleActiveRef.current = false;
+    // Stop wobble if active for current layer
+    const activeLayer = getActiveLayer();
+    if (activeLayer) {
+      const wobbleKey = `layer_${activeLayer.id}`;
+      if (wobbleActiveRef.current[wobbleKey]) {
+        stopWobble();
+        wobbleActiveRef.current[wobbleKey] = false;
+      }
     }
-  }, []);
+  }, [syncLayerState]);
 
   // Get lanes that were hit on current step (for visual feedback)
   const getHitLanes = useCallback(() => {
@@ -216,8 +325,7 @@ export function useSequencer() {
   // Cycle pattern for a pattern lane
   const cyclePattern = useCallback((lane) => {
     cyclePatternFn(lane);
-    setPatternIndices({ ...getPatternIndices() });
-    setActiveLanes({ ...getActiveLanes() });
+    syncLayerState();
 
     // Apply pattern change to audio
     const laneConfig = LANES[lane];
@@ -231,10 +339,14 @@ export function useSequencer() {
         const rateMap = { '1/4': '4n', '1/8': '8n', '1/16': '16n' };
         const rate = rateMap[patternName] || '8n';
         setWobbleRate(rate);
-        // Start wobble if not already running
-        if (!wobbleActiveRef.current) {
-          startWobble();
-          wobbleActiveRef.current = true;
+        // Start wobble if not already running for this layer
+        const activeLayer = getActiveLayer();
+        if (activeLayer) {
+          const wobbleKey = `layer_${activeLayer.id}`;
+          if (!wobbleActiveRef.current[wobbleKey]) {
+            startWobble();
+            wobbleActiveRef.current[wobbleKey] = true;
+          }
         }
         break;
       case 'chord':
@@ -247,24 +359,35 @@ export function useSequencer() {
         setArpMode(patternName);
         break;
     }
-  }, []);
+  }, [syncLayerState]);
 
   // Toggle active state for a pattern lane
   const toggleActive = useCallback((lane) => {
     toggleActiveFn(lane);
-    setActiveLanes({ ...getActiveLanes() });
+    syncLayerState();
 
     // Handle wobble special case
     if (lane === 'wobble') {
-      if (isActiveFn(lane)) {
-        startWobble();
-        wobbleActiveRef.current = true;
-      } else {
-        stopWobble();
-        wobbleActiveRef.current = false;
+      const activeLayer = getActiveLayer();
+      if (activeLayer) {
+        const wobbleKey = `layer_${activeLayer.id}`;
+        if (isActiveFn(lane)) {
+          startWobble();
+          wobbleActiveRef.current[wobbleKey] = true;
+        } else {
+          // Only stop if no other layer has wobble active
+          const allLayers = getAllLayers();
+          const anyWobbleActive = allLayers.some(l =>
+            l.id !== activeLayer.id && l.activeLanes['wobble'] && !l.mutedLanes['wobble']
+          );
+          if (!anyWobbleActive) {
+            stopWobble();
+          }
+          wobbleActiveRef.current[wobbleKey] = false;
+        }
       }
     }
-  }, []);
+  }, [syncLayerState]);
 
   // === PLAYBACK FUNCTIONS ===
 
@@ -280,17 +403,28 @@ export function useSequencer() {
   // Toggle mute for a lane
   const toggleMute = useCallback((lane) => {
     toggleMuteFn(lane);
-    setMutedLanes({ ...getMutedLanes() });
+    syncLayerState();
 
     // Handle wobble mute
     if (lane === 'wobble') {
-      if (isMuted(lane) && wobbleActiveRef.current) {
-        stopWobble();
-      } else if (!isMuted(lane) && isActiveFn(lane)) {
-        startWobble();
+      const activeLayer = getActiveLayer();
+      if (activeLayer) {
+        const wobbleKey = `layer_${activeLayer.id}`;
+        if (isMuted(lane) && wobbleActiveRef.current[wobbleKey]) {
+          // Only stop if no other layer has wobble active
+          const allLayers = getAllLayers();
+          const anyWobbleActive = allLayers.some(l =>
+            l.id !== activeLayer.id && l.activeLanes['wobble'] && !l.mutedLanes['wobble']
+          );
+          if (!anyWobbleActive) {
+            stopWobble();
+          }
+        } else if (!isMuted(lane) && isActiveFn(lane)) {
+          startWobble();
+        }
       }
     }
-  }, []);
+  }, [syncLayerState]);
 
   // Unlock all lanes
   const unlockAll = useCallback(() => {
@@ -410,6 +544,13 @@ export function useSequencer() {
     tempo,
     tension,
 
+    // Layer state
+    layers,
+    activeLayerIndex,
+    layerCount: layers.length,
+    canAddLayer: layers.length < MAX_LAYERS,
+    maxLayers: MAX_LAYERS,
+
     // Playback
     togglePlay,
 
@@ -423,6 +564,12 @@ export function useSequencer() {
     cyclePattern,
     toggleActive,
     getPatternName,
+
+    // Layer management
+    lockAndBuild,
+    selectLayer,
+    deleteLayer: deleteLayerById,
+    isLayerLocked,
 
     // Mute/Unlock
     toggleMute,

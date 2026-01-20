@@ -6,59 +6,76 @@ import {
   LANES,
   LANES_BY_CATEGORY,
   CATEGORY_ORDER,
-  UNLOCK_THRESHOLDS,
+  MAX_LAYERS,
 } from './constants.js';
 
-// Sequencer state
-let grid = {};
+// === LAYER-BASED STATE ===
+// Each layer contains its own grid, activeLanes, patternIndices, mutedLanes
+
+let layers = [];
+let activeLayerIndex = 0;
+let nextLayerId = 0;
+
+// Global state (shared across layers)
 let playhead = 0;
 let stepListeners = [];
 let isInitialized = false;
-
-// Lane states
-let mutedLanes = {};      // { laneId: boolean }
-let unlockedLanes = {};   // { laneId: boolean }
-let activeLanes = {};     // { laneId: boolean } - whether lane is enabled
-let patternIndices = {};  // { laneId: number } - current pattern index for pattern lanes
-
-// Category state
 let currentCategory = 'drums';
 
-/**
- * Initialize the sequencer with empty grid
- */
-export function initSequencer() {
-  // Create empty grid for grid-type lanes
-  grid = {};
-  mutedLanes = {};
-  unlockedLanes = {};
-  activeLanes = {};
-  patternIndices = {};
+// Unlock state (global - applies to all layers)
+let unlockedLanes = {};
 
+/**
+ * Create a fresh layer object
+ * @returns {Object} New layer with empty state
+ */
+function createEmptyLayer() {
+  const layer = {
+    id: nextLayerId++,
+    grid: {},
+    activeLanes: {},
+    patternIndices: {},
+    mutedLanes: {},
+    locked: false,
+  };
+
+  // Initialize grid for grid-type lanes
   LANE_ORDER.forEach((lane) => {
     const laneConfig = LANES[lane];
 
-    // Grid lanes have step data
     if (laneConfig.type === 'grid') {
-      grid[lane] = new Array(STEPS_PER_BAR).fill(0);
+      layer.grid[lane] = new Array(STEPS_PER_BAR).fill(0);
     }
 
-    // Pattern lanes have pattern index
     if (laneConfig.type === 'pattern') {
-      patternIndices[lane] = laneConfig.defaultPattern || 0;
+      layer.patternIndices[lane] = laneConfig.defaultPattern || 0;
     }
 
-    mutedLanes[lane] = false;
-    // All lanes start unlocked
+    layer.mutedLanes[lane] = false;
+    layer.activeLanes[lane] = false;
+  });
+
+  return layer;
+}
+
+/**
+ * Initialize the sequencer with a single layer
+ */
+export function initSequencer() {
+  layers = [createEmptyLayer()];
+  activeLayerIndex = 0;
+  nextLayerId = 1; // Reset since we created layer 0
+
+  // Initialize global unlock state
+  unlockedLanes = {};
+  LANE_ORDER.forEach((lane) => {
     unlockedLanes[lane] = true;
-    // All lanes start inactive (user enables by interacting)
-    activeLanes[lane] = false;
   });
 
   playhead = 0;
   currentCategory = 'drums';
   isInitialized = true;
-  console.log('Sequencer initialized');
+  console.log('Sequencer initialized with layer system');
 }
 
 /**
@@ -68,27 +85,174 @@ export function isSequencerReady() {
   return isInitialized;
 }
 
-// === GRID LANE FUNCTIONS ===
+/**
+ * Get the active layer
+ * @returns {Object} Current active layer
+ */
+export function getActiveLayer() {
+  return layers[activeLayerIndex] || layers[0];
+}
+
+/**
+ * Get all layers
+ * @returns {Array} All layers
+ */
+export function getAllLayers() {
+  return [...layers];
+}
+
+/**
+ * Get layer count
+ * @returns {number} Number of layers
+ */
+export function getLayerCount() {
+  return layers.length;
+}
+
+/**
+ * Get active layer index
+ * @returns {number} Index of active layer
+ */
+export function getActiveLayerIndex() {
+  return activeLayerIndex;
+}
+
+/**
+ * Create a new layer
+ * @returns {Object|null} New layer object or null if at max
+ */
+export function createLayer() {
+  if (layers.length >= MAX_LAYERS) {
+    console.log('Max layers reached');
+    return null;
+  }
+
+  const newLayer = createEmptyLayer();
+  layers.push(newLayer);
+  return newLayer;
+}
+
+/**
+ * Lock a layer (still plays, can't edit)
+ * @param {number} layerId - Layer ID to lock
+ */
+export function lockLayer(layerId) {
+  const layer = layers.find(l => l.id === layerId);
+  if (layer) {
+    layer.locked = true;
+  }
+}
+
+/**
+ * Unlock a layer for editing
+ * @param {number} layerId - Layer ID to unlock
+ */
+export function unlockLayerById(layerId) {
+  const layer = layers.find(l => l.id === layerId);
+  if (layer) {
+    layer.locked = false;
+  }
+}
+
+/**
+ * Delete a layer
+ * @param {number} layerId - Layer ID to delete
+ * @returns {boolean} Success
+ */
+export function deleteLayer(layerId) {
+  if (layers.length <= 1) {
+    console.log('Cannot delete last layer');
+    return false;
+  }
+
+  const index = layers.findIndex(l => l.id === layerId);
+  if (index === -1) return false;
+
+  layers.splice(index, 1);
+
+  // Adjust active layer index if needed
+  if (activeLayerIndex >= layers.length) {
+    activeLayerIndex = layers.length - 1;
+  }
+
+  return true;
+}
+
+/**
+ * Set active layer by ID
+ * @param {number} layerId - Layer ID to make active
+ */
+export function setActiveLayer(layerId) {
+  const index = layers.findIndex(l => l.id === layerId);
+  if (index !== -1) {
+    activeLayerIndex = index;
+    // Auto-unlock if locked
+    if (layers[index].locked) {
+      layers[index].locked = false;
+    }
+  }
+}
+
+/**
+ * Lock current layer and create a new one (main UX action)
+ * @returns {Object|null} New layer or null if at max
+ */
+export function lockAndBuild() {
+  if (layers.length >= MAX_LAYERS) {
+    return null;
+  }
+
+  // Lock current layer
+  const currentLayer = getActiveLayer();
+  currentLayer.locked = true;
+
+  // Create new layer
+  const newLayer = createLayer();
+  if (newLayer) {
+    // Make new layer active
+    activeLayerIndex = layers.length - 1;
+  }
+
+  return newLayer;
+}
+
+/**
+ * Check if a layer is locked
+ * @param {number} layerId - Layer ID
+ * @returns {boolean} Lock state
+ */
+export function isLayerLocked(layerId) {
+  const layer = layers.find(l => l.id === layerId);
+  return layer ? layer.locked : false;
+}
+
+// === GRID LANE FUNCTIONS (operate on active layer) ===
 
 /**
  * Toggle a step on/off (for grid lanes)
  * @param {string} lane - Lane name
  * @param {number} step - Step index (0-15)
+ * @param {number} [layerId] - Optional layer ID (defaults to active)
  * @returns {number} New value (0 or 1)
  */
-export function toggleStep(lane, step) {
-  if (!grid[lane]) return 0;
-  if (step < 0 || step >= STEPS_PER_BAR) return grid[lane][step] || 0;
+export function toggleStep(lane, step, layerId) {
+  const layer = layerId !== undefined
+    ? layers.find(l => l.id === layerId)
+    : getActiveLayer();
+
+  if (!layer || layer.locked) return 0;
+  if (!layer.grid[lane]) return 0;
+  if (step < 0 || step >= STEPS_PER_BAR) return layer.grid[lane][step] || 0;
   if (!unlockedLanes[lane]) return 0;
 
-  grid[lane][step] = grid[lane][step] ? 0 : 1;
+  layer.grid[lane][step] = layer.grid[lane][step] ? 0 : 1;
 
   // Auto-activate lane when first trigger placed
-  if (grid[lane][step] === 1) {
-    activeLanes[lane] = true;
+  if (layer.grid[lane][step] === 1) {
+    layer.activeLanes[lane] = true;
   }
 
-  return grid[lane][step];
+  return layer.grid[lane][step];
 }
 
 /**
@@ -96,63 +260,76 @@ export function toggleStep(lane, step) {
  * @param {string} lane - Lane name
  * @param {number} step - Step index
  * @param {number} value - 0 or 1
+ * @param {number} [layerId] - Optional layer ID
  */
-export function setStep(lane, step, value) {
-  if (!grid[lane]) return;
+export function setStep(lane, step, value, layerId) {
+  const layer = layerId !== undefined
+    ? layers.find(l => l.id === layerId)
+    : getActiveLayer();
+
+  if (!layer || layer.locked) return;
+  if (!layer.grid[lane]) return;
   if (step < 0 || step >= STEPS_PER_BAR) return;
 
-  grid[lane][step] = value ? 1 : 0;
+  layer.grid[lane][step] = value ? 1 : 0;
 }
 
 /**
- * Get the current grid state
+ * Get the current grid state (active layer)
  * @returns {Object} Grid object with lane arrays
  */
 export function getGrid() {
-  return grid;
+  return getActiveLayer().grid;
 }
 
 /**
- * Get a specific lane's pattern
+ * Get a specific lane's pattern (active layer)
  * @param {string} lane - Lane name
  * @returns {Array} Array of step values
  */
 export function getLane(lane) {
-  return grid[lane] || [];
+  return getActiveLayer().grid[lane] || [];
 }
 
 /**
- * Clear all triggers in a lane
+ * Clear all triggers in a lane (active layer)
  * @param {string} lane - Lane name
  */
 export function clearLane(lane) {
-  if (grid[lane]) {
-    grid[lane] = new Array(STEPS_PER_BAR).fill(0);
+  const layer = getActiveLayer();
+  if (layer.locked) return;
+
+  if (layer.grid[lane]) {
+    layer.grid[lane] = new Array(STEPS_PER_BAR).fill(0);
   }
 }
 
 /**
- * Clear entire grid
+ * Clear entire grid (active layer)
  */
 export function clearGrid() {
+  const layer = getActiveLayer();
+  if (layer.locked) return;
+
   GRID_LANES.forEach(lane => {
-    if (grid[lane]) {
-      grid[lane] = new Array(STEPS_PER_BAR).fill(0);
+    if (layer.grid[lane]) {
+      layer.grid[lane] = new Array(STEPS_PER_BAR).fill(0);
     }
   });
 }
 
 /**
- * Get pattern density (for visual effects)
+ * Get pattern density (for visual effects, active layer)
  * @returns {number} 0-1 representing how full the grid is
  */
 export function getGridDensity() {
+  const layer = getActiveLayer();
   let active = 0;
   let total = 0;
 
   GRID_LANES.forEach(lane => {
-    if (grid[lane]) {
-      grid[lane].forEach(step => {
+    if (layer.grid[lane]) {
+      layer.grid[lane].forEach(step => {
         if (step) active++;
         total++;
       });
@@ -165,53 +342,63 @@ export function getGridDensity() {
 // === PATTERN LANE FUNCTIONS ===
 
 /**
- * Get current pattern index for a pattern lane
+ * Get current pattern index for a pattern lane (active layer)
  * @param {string} lane - Lane name
  * @returns {number} Current pattern index
  */
 export function getPatternIndex(lane) {
-  return patternIndices[lane] || 0;
+  return getActiveLayer().patternIndices[lane] || 0;
 }
 
 /**
  * Set pattern index for a pattern lane
  * @param {string} lane - Lane name
  * @param {number} index - Pattern index
+ * @param {number} [layerId] - Optional layer ID
  */
-export function setPatternIndex(lane, index) {
+export function setPatternIndex(lane, index, layerId) {
+  const layer = layerId !== undefined
+    ? layers.find(l => l.id === layerId)
+    : getActiveLayer();
+
+  if (!layer || layer.locked) return;
+
   const laneConfig = LANES[lane];
   if (!laneConfig || laneConfig.type !== 'pattern') return;
 
   const patterns = laneConfig.patterns || [];
   if (index >= 0 && index < patterns.length) {
-    patternIndices[lane] = index;
+    layer.patternIndices[lane] = index;
   }
 }
 
 /**
- * Cycle to next pattern for a pattern lane
+ * Cycle to next pattern for a pattern lane (active layer)
  * @param {string} lane - Lane name
  * @returns {number} New pattern index
  */
 export function cyclePattern(lane) {
+  const layer = getActiveLayer();
+  if (layer.locked) return getPatternIndex(lane);
+
   const laneConfig = LANES[lane];
   if (!laneConfig || laneConfig.type !== 'pattern') return 0;
 
   const patterns = laneConfig.patterns || [];
   if (patterns.length === 0) return 0;
 
-  const currentIndex = patternIndices[lane] || 0;
+  const currentIndex = layer.patternIndices[lane] || 0;
   const newIndex = (currentIndex + 1) % patterns.length;
-  patternIndices[lane] = newIndex;
+  layer.patternIndices[lane] = newIndex;
 
   // Auto-activate lane when pattern is cycled
-  activeLanes[lane] = true;
+  layer.activeLanes[lane] = true;
 
   return newIndex;
 }
 
 /**
- * Get current pattern name for a pattern lane
+ * Get current pattern name for a pattern lane (active layer)
  * @param {string} lane - Lane name
  * @returns {string} Current pattern name
  */
@@ -220,16 +407,16 @@ export function getPatternName(lane) {
   if (!laneConfig || laneConfig.type !== 'pattern') return '';
 
   const patterns = laneConfig.patterns || [];
-  const index = patternIndices[lane] || 0;
+  const index = getActiveLayer().patternIndices[lane] || 0;
   return patterns[index] || '';
 }
 
 /**
- * Get all pattern indices
+ * Get all pattern indices (active layer)
  * @returns {Object} Pattern indices for all pattern lanes
  */
 export function getPatternIndices() {
-  return { ...patternIndices };
+  return { ...getActiveLayer().patternIndices };
 }
 
 // === PLAYHEAD FUNCTIONS ===
@@ -250,32 +437,47 @@ export function getPlayhead() {
 export function advancePlayhead() {
   const currentStep = playhead;
 
-  // Collect which grid lanes are active at this step
-  const activeGridLanes = [];
-  GRID_LANES.forEach(lane => {
-    if (grid[lane] && grid[lane][currentStep] && !mutedLanes[lane]) {
-      activeGridLanes.push(lane);
-    }
-  });
+  // Collect active lanes from ALL layers (for playback)
+  const layerStepInfo = layers.map(layer => {
+    const activeGridLanes = [];
+    GRID_LANES.forEach(lane => {
+      if (layer.grid[lane] && layer.grid[lane][currentStep] && !layer.mutedLanes[lane]) {
+        activeGridLanes.push(lane);
+      }
+    });
 
-  // Check which pattern lanes are active
-  const activePatternLanes = [];
-  PATTERN_LANES.forEach(lane => {
-    if (activeLanes[lane] && !mutedLanes[lane]) {
-      activePatternLanes.push(lane);
-    }
+    const activePatternLanes = [];
+    PATTERN_LANES.forEach(lane => {
+      if (layer.activeLanes[lane] && !layer.mutedLanes[lane]) {
+        activePatternLanes.push(lane);
+      }
+    });
+
+    return {
+      layerId: layer.id,
+      activeGridLanes,
+      activePatternLanes,
+    };
   });
 
   // Advance to next step (loop)
   playhead = (playhead + 1) % STEPS_PER_BAR;
 
-  // Notify listeners
+  // Build combined step info for backwards compatibility
+  const allActiveGridLanes = new Set();
+  const allActivePatternLanes = new Set();
+  layerStepInfo.forEach(info => {
+    info.activeGridLanes.forEach(l => allActiveGridLanes.add(l));
+    info.activePatternLanes.forEach(l => allActivePatternLanes.add(l));
+  });
+
   const stepInfo = {
     step: currentStep,
-    activeGridLanes,
-    activePatternLanes,
+    activeGridLanes: Array.from(allActiveGridLanes),
+    activePatternLanes: Array.from(allActivePatternLanes),
+    layerStepInfo, // Per-layer info for multi-layer playback
     // Legacy compatibility
-    activeLanes: activeGridLanes,
+    activeLanes: Array.from(allActiveGridLanes),
     isDownbeat: currentStep === 0,
     isBeat: currentStep % 4 === 0,
     isBar: currentStep === 0,
@@ -298,44 +500,46 @@ export function onStep(callback) {
   };
 }
 
-// === LANE STATE FUNCTIONS ===
+// === LANE STATE FUNCTIONS (operate on active layer) ===
 
 /**
- * Toggle mute state for a lane
+ * Toggle mute state for a lane (active layer)
  * @param {string} lane - Lane name
  * @returns {boolean} New mute state
  */
 export function toggleMute(lane) {
-  if (!mutedLanes.hasOwnProperty(lane)) return false;
-  mutedLanes[lane] = !mutedLanes[lane];
-  return mutedLanes[lane];
+  const layer = getActiveLayer();
+  if (!layer.mutedLanes.hasOwnProperty(lane)) return false;
+  layer.mutedLanes[lane] = !layer.mutedLanes[lane];
+  return layer.mutedLanes[lane];
 }
 
 /**
- * Set mute state for a lane
+ * Set mute state for a lane (active layer)
  * @param {string} lane - Lane name
  * @param {boolean} muted - Mute state
  */
 export function setMute(lane, muted) {
-  if (!mutedLanes.hasOwnProperty(lane)) return;
-  mutedLanes[lane] = muted;
+  const layer = getActiveLayer();
+  if (!layer.mutedLanes.hasOwnProperty(lane)) return;
+  layer.mutedLanes[lane] = muted;
 }
 
 /**
- * Check if a lane is muted
+ * Check if a lane is muted (active layer)
  * @param {string} lane - Lane name
  * @returns {boolean} Mute state
  */
 export function isMuted(lane) {
-  return mutedLanes[lane] || false;
+  return getActiveLayer().mutedLanes[lane] || false;
 }
 
 /**
- * Get all muted lanes
+ * Get all muted lanes (active layer)
  * @returns {Object} Muted lanes object
  */
 export function getMutedLanes() {
-  return { ...mutedLanes };
+  return { ...getActiveLayer().mutedLanes };
 }
 
 /**
@@ -344,40 +548,48 @@ export function getMutedLanes() {
  * @returns {boolean} New active state
  */
 export function toggleActive(lane) {
-  if (!activeLanes.hasOwnProperty(lane)) return false;
-  activeLanes[lane] = !activeLanes[lane];
-  return activeLanes[lane];
+  const layer = getActiveLayer();
+  if (layer.locked) return layer.activeLanes[lane] || false;
+  if (!layer.activeLanes.hasOwnProperty(lane)) return false;
+  layer.activeLanes[lane] = !layer.activeLanes[lane];
+  return layer.activeLanes[lane];
 }
 
 /**
  * Set active state for a lane
  * @param {string} lane - Lane name
  * @param {boolean} active - Active state
+ * @param {number} [layerId] - Optional layer ID
  */
-export function setActive(lane, active) {
-  if (!activeLanes.hasOwnProperty(lane)) return;
-  activeLanes[lane] = active;
+export function setActive(lane, active, layerId) {
+  const layer = layerId !== undefined
+    ? layers.find(l => l.id === layerId)
+    : getActiveLayer();
+
+  if (!layer || layer.locked) return;
+  if (!layer.activeLanes.hasOwnProperty(lane)) return;
+  layer.activeLanes[lane] = active;
 }
 
 /**
- * Check if a lane is active
+ * Check if a lane is active (active layer)
  * @param {string} lane - Lane name
  * @returns {boolean} Active state
  */
 export function isActive(lane) {
-  return activeLanes[lane] || false;
+  return getActiveLayer().activeLanes[lane] || false;
 }
 
 /**
- * Get all active lanes
+ * Get all active lanes (active layer)
  * @returns {Object} Active lanes object
  */
 export function getActiveLanes() {
-  return { ...activeLanes };
+  return { ...getActiveLayer().activeLanes };
 }
 
 /**
- * Check if a lane is unlocked
+ * Check if a lane is unlocked (global)
  * @param {string} lane - Lane name
  * @returns {boolean} Unlocked state
  */
@@ -386,7 +598,7 @@ export function isUnlocked(lane) {
 }
 
 /**
- * Get all unlocked lanes
+ * Get all unlocked lanes (global)
  * @returns {Object} Unlocked lanes object
  */
 export function getUnlockedLanes() {
@@ -394,7 +606,7 @@ export function getUnlockedLanes() {
 }
 
 /**
- * Force unlock a lane
+ * Force unlock a lane (global)
  * @param {string} lane - Lane name
  */
 export function unlockLane(lane) {
@@ -404,7 +616,7 @@ export function unlockLane(lane) {
 }
 
 /**
- * Unlock all lanes
+ * Unlock all lanes (global)
  */
 export function unlockAllLanes() {
   LANE_ORDER.forEach(lane => {
@@ -463,25 +675,36 @@ export function getLanesForCategory(category) {
 // === CLEAR FUNCTIONS ===
 
 /**
- * Clear all - reset grid and pattern lanes
+ * Clear all - reset grid and pattern lanes (active layer only)
  */
 export function clearAll() {
+  const layer = getActiveLayer();
+  if (layer.locked) return;
+
   // Clear grid lanes
   GRID_LANES.forEach(lane => {
-    if (grid[lane]) {
-      grid[lane] = new Array(STEPS_PER_BAR).fill(0);
+    if (layer.grid[lane]) {
+      layer.grid[lane] = new Array(STEPS_PER_BAR).fill(0);
     }
   });
 
   // Deactivate all pattern lanes
   PATTERN_LANES.forEach(lane => {
-    activeLanes[lane] = false;
+    layer.activeLanes[lane] = false;
   });
 
   // Reset all grid lane active states
   GRID_LANES.forEach(lane => {
-    activeLanes[lane] = false;
+    layer.activeLanes[lane] = false;
   });
+}
+
+/**
+ * Clear all layers and reset to single empty layer
+ */
+export function clearAllLayers() {
+  layers = [createEmptyLayer()];
+  activeLayerIndex = 0;
 }
 
 // === CLEANUP ===
@@ -490,13 +713,12 @@ export function clearAll() {
  * Cleanup sequencer
  */
 export function disposeSequencer() {
-  grid = {};
+  layers = [];
+  activeLayerIndex = 0;
+  nextLayerId = 0;
   playhead = 0;
   stepListeners = [];
-  mutedLanes = {};
   unlockedLanes = {};
-  activeLanes = {};
-  patternIndices = {};
   currentCategory = 'drums';
   isInitialized = false;
 }
