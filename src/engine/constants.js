@@ -11,7 +11,7 @@ export const STEP_WIDTH = 0;        // 0 = auto-calculate based on screen width
 export const PLAYHEAD_WIDTH = 4;    // Width of playhead line
 export const TRIGGER_RADIUS = 10;   // Radius of trigger circles (reduced slightly)
 export const LANE_PADDING = 20;     // Padding around lanes
-export const HEADER_WIDTH = 60;     // Width of lane header (for tap detection)
+export const HEADER_WIDTH = 90;     // Width of lane header (for tap detection) - wider for character names
 export const STAB_BUTTON_SIZE = 56; // Size of stab buttons
 export const STAB_BAR_HEIGHT = 100; // Height of stab button bar (2x2 grid)
 
@@ -70,6 +70,9 @@ export const LANES = {
     synth: 'sub',
     type: 'grid',
     category: 'bass',
+    // SUB is a hybrid: grid triggers + cyclable sound characters
+    characters: ['Deep', 'Punch', 'Growl', 'Reese', 'Acid', 'Rubber'],
+    defaultCharacter: 0,
   },
   wobble: {
     name: 'WOBBLE',
@@ -77,8 +80,8 @@ export const LANES = {
     synth: 'wobble',
     type: 'pattern',
     category: 'bass',
-    patterns: ['1/4', '1/8', '1/16'],
-    defaultPattern: 1, // 1/8
+    patterns: ['Smooth', 'Pulse', 'Growl', 'Sweep', 'Chop', 'Chaos'],
+    defaultPattern: 0,
   },
   // MELODIC category
   chord: {
@@ -87,7 +90,7 @@ export const LANES = {
     synth: 'chord',
     type: 'pattern',
     category: 'melodic',
-    patterns: ['i-VI-III-VII', 'i-VII-VI-VII', 'i-i-VI-VII'],
+    patterns: ['Epic Rise', 'Deep', 'Minimal', 'Bright', 'Tension', 'Wide'],
     defaultPattern: 0,
   },
   lead: {
@@ -96,7 +99,7 @@ export const LANES = {
     synth: 'lead',
     type: 'pattern',
     category: 'melodic',
-    patterns: ['Hook 1', 'Hook 2', 'Hook 3'],
+    patterns: ['Soar', 'Punch', 'Journey', 'Fall', 'Rush', 'High'],
     defaultPattern: 0,
   },
   arp: {
@@ -105,7 +108,7 @@ export const LANES = {
     synth: 'arp',
     type: 'pattern',
     category: 'melodic',
-    patterns: ['Up', 'Down', 'Random'],
+    patterns: ['Climb', 'Fall', 'Scatter', 'Cascade', 'Skip', 'Shimmer'],
     defaultPattern: 0,
   },
 };
@@ -125,6 +128,9 @@ export const GRID_LANES = ['kick', 'hat', 'clap', 'perc', 'sub'];
 
 // Pattern-type lanes (for pattern cycling logic)
 export const PATTERN_LANES = ['wobble', 'chord', 'lead', 'arp'];
+
+// Hybrid lanes: grid triggers + cyclable sound characters
+export const HYBRID_LANES = ['sub'];
 
 // Progressive unlock thresholds (number of triggers to unlock each lane)
 // All lanes start unlocked for better UX
@@ -159,36 +165,201 @@ export const F_MINOR_BASS = C_MINOR_BASS;
 export const PERC_PITCHES = ['F3', 'C3', 'G3', 'D3'];
 
 // Chord progressions in C minor
+// Each progression has distinct character through voicing, register, and chord choice
 export const CHORD_PROGRESSIONS = {
-  'i-VI-III-VII': [
-    ['C3', 'Eb3', 'G3'],      // Cm (i)
-    ['Ab2', 'C3', 'Eb3'],     // Ab (VI)
-    ['Eb3', 'G3', 'Bb3'],     // Eb (III)
-    ['Bb2', 'D3', 'F3'],      // Bb (VII)
+  // Classic EDM anthem - standard voicing, 4 chords
+  'Epic Rise': [
+    ['C3', 'Eb3', 'G3'],        // Cm
+    ['Ab2', 'C3', 'Eb3'],       // Ab
+    ['Eb3', 'G3', 'Bb3'],       // Eb
+    ['Bb2', 'D3', 'F3'],        // Bb
   ],
-  'i-VII-VI-VII': [
-    ['C3', 'Eb3', 'G3'],      // Cm (i)
-    ['Bb2', 'D3', 'F3'],      // Bb (VII)
-    ['Ab2', 'C3', 'Eb3'],     // Ab (VI)
-    ['Bb2', 'D3', 'F3'],      // Bb (VII)
+  // Deep & dark - lower register with 7ths for richness
+  'Deep': [
+    ['C2', 'Eb2', 'G2', 'Bb2'], // Cm7 (low, full)
+    ['Ab1', 'Eb2', 'G2', 'C3'], // Ab (spread voicing)
+    ['Bb1', 'F2', 'Bb2', 'D3'], // Bb (power chord feel)
+    ['G1', 'D2', 'G2', 'Bb2'],  // Gm (darker substitute)
   ],
-  'i-i-VI-VII': [
-    ['C3', 'Eb3', 'G3'],      // Cm (i)
-    ['C3', 'Eb3', 'G3'],      // Cm (i)
-    ['Ab2', 'C3', 'Eb3'],     // Ab (VI)
-    ['Bb2', 'D3', 'F3'],      // Bb (VII)
+  // Minimal - just 2 chords, hypnotic pulse
+  'Minimal': [
+    ['C3', 'G3'],               // Cm (no 3rd - ambiguous)
+    ['C3', 'G3'],               // repeat
+    ['Ab2', 'Eb3'],             // Ab (no 3rd)
+    ['Ab2', 'Eb3'],             // repeat
+  ],
+  // Bright & uplifting - higher register, open voicings
+  'Bright': [
+    ['G3', 'C4', 'Eb4'],        // Cm (1st inversion, high)
+    ['Eb3', 'Ab3', 'C4'],       // Ab (1st inversion)
+    ['F3', 'Bb3', 'D4'],        // Bb (high)
+    ['G3', 'C4', 'Eb4'],        // back to Cm
+  ],
+  // Tense - uses Fm and Ddim for unresolved feeling
+  'Tension': [
+    ['C3', 'Eb3', 'G3'],        // Cm
+    ['F2', 'Ab2', 'C3'],        // Fm (minor iv - sad)
+    ['D3', 'F3', 'Ab3'],        // Ddim (tension!)
+    ['G2', 'B2', 'D3'],         // G (dominant - wants to resolve)
+  ],
+  // Wide & ethereal - spread across octaves
+  'Wide': [
+    ['C2', 'G3', 'Eb4'],        // Cm (huge spread)
+    ['Ab1', 'Eb3', 'C4'],       // Ab (spread)
+    ['Bb1', 'F3', 'D4'],        // Bb (spread)
+    ['Eb2', 'Bb3', 'G4'],       // Eb (spread, high)
   ],
 };
 
-// Lead phrases (C minor pentatonic: C, Eb, F, G, Bb)
+// Lead phrases - each has unique length and melodic character
+// Using C minor pentatonic: C, Eb, F, G, Bb (plus octaves)
 export const LEAD_PHRASES = {
-  'Hook 1': ['C4', 'Eb4', 'G4', 'Eb4', 'C4', 'G4', 'F4', 'Eb4'],
-  'Hook 2': ['G4', 'F4', 'Eb4', 'C4', 'Eb4', 'F4', 'G4', 'Bb4'],
-  'Hook 3': ['Eb4', 'G4', 'Bb4', 'G4', 'F4', 'Eb4', 'C4', 'Eb4'],
+  // 8 notes - classic rising anthem hook
+  'Soar': ['C4', 'Eb4', 'G4', 'C5', 'Bb4', 'G4', 'Eb4', 'G4'],
+  // 4 notes - short punchy motif with big leap
+  'Punch': ['G4', 'C5', 'G4', 'Eb4'],
+  // 12 notes - long winding phrase, call & response
+  'Journey': ['C4', 'Eb4', 'G4', 'Bb4', 'G4', 'Eb4', 'F4', 'G4', 'Bb4', 'C5', 'Bb4', 'G4'],
+  // 6 notes - descending run, urgent feel
+  'Fall': ['C5', 'Bb4', 'G4', 'F4', 'Eb4', 'C4'],
+  // 16 notes - busy, energetic arpeggio-style
+  'Rush': ['C4', 'G4', 'Eb4', 'G4', 'C4', 'Bb4', 'F4', 'Bb4', 'C4', 'G4', 'Eb4', 'C5', 'Bb4', 'G4', 'Eb4', 'G4'],
+  // 4 notes - high register, spacey with octave jump
+  'High': ['G4', 'G5', 'Eb5', 'C5'],
+};
+
+// === SUB BASS CHARACTERS ===
+// Each character has distinct synth settings for variety
+export const SUB_CHARACTERS = {
+  // Deep - smooth triangle, classic sub
+  'Deep': {
+    oscillator: 'triangle',
+    filterQ: 1,
+    filterFreq: 200,
+    attack: 0.01,
+    decay: 0.2,
+    sustain: 0.4,
+    release: 0.3,
+  },
+  // Punch - fast attack sine, percussive
+  'Punch': {
+    oscillator: 'sine',
+    filterQ: 1.5,
+    filterFreq: 300,
+    attack: 0.001,
+    decay: 0.1,
+    sustain: 0.2,
+    release: 0.1,
+  },
+  // Growl - sawtooth with grit
+  'Growl': {
+    oscillator: 'sawtooth',
+    filterQ: 3,
+    filterFreq: 400,
+    attack: 0.005,
+    decay: 0.15,
+    sustain: 0.5,
+    release: 0.2,
+  },
+  // Reese - detuned for thickness (will use detune in audio.js)
+  'Reese': {
+    oscillator: 'sawtooth',
+    filterQ: 2,
+    filterFreq: 350,
+    attack: 0.01,
+    decay: 0.2,
+    sustain: 0.6,
+    release: 0.3,
+    detune: 12, // cents
+  },
+  // Acid - resonant square, TB-303 style
+  'Acid': {
+    oscillator: 'square',
+    filterQ: 8,
+    filterFreq: 500,
+    attack: 0.001,
+    decay: 0.2,
+    sustain: 0.3,
+    release: 0.15,
+  },
+  // Rubber - FM bass, bouncy
+  'Rubber': {
+    oscillator: 'fmsine',
+    filterQ: 2,
+    filterFreq: 250,
+    attack: 0.001,
+    decay: 0.25,
+    sustain: 0.1,
+    release: 0.2,
+    harmonicity: 0.5,
+  },
+};
+
+// === WOBBLE CHARACTERS ===
+// Different LFO shapes and rates for wobble variety
+export const WOBBLE_CHARACTERS = {
+  // Smooth - classic sine wobble, medium rate
+  'Smooth': {
+    rate: '4n',
+    shape: 'sine',
+    filterMin: 100,
+    filterMax: 1500,
+    filterQ: 4,
+  },
+  // Pulse - square LFO for choppy gating
+  'Pulse': {
+    rate: '8n',
+    shape: 'square',
+    filterMin: 80,
+    filterMax: 1200,
+    filterQ: 5,
+  },
+  // Growl - fast triangle with high resonance
+  'Growl': {
+    rate: '8n',
+    shape: 'triangle',
+    filterMin: 150,
+    filterMax: 2000,
+    filterQ: 8,
+  },
+  // Sweep - slow, wide filter movement
+  'Sweep': {
+    rate: '2n',
+    shape: 'sine',
+    filterMin: 60,
+    filterMax: 2500,
+    filterQ: 3,
+  },
+  // Chop - very fast, aggressive
+  'Chop': {
+    rate: '16n',
+    shape: 'square',
+    filterMin: 100,
+    filterMax: 1000,
+    filterQ: 6,
+  },
+  // Chaos - random/sample-hold for unpredictable movement
+  'Chaos': {
+    rate: '8n',
+    shape: 'random', // Will use sample-hold in audio.js
+    filterMin: 80,
+    filterMax: 2000,
+    filterQ: 5,
+  },
 };
 
 // Arp notes (Cm7 arpeggio)
 export const ARP_NOTES = ['C3', 'Eb3', 'G3', 'Bb3', 'C4'];
+
+// Arp modes - evocative names for different arpeggiator patterns
+export const ARP_MODES = [
+  'Climb',    // Ascending (was "Up")
+  'Fall',     // Descending (was "Down")
+  'Scatter',  // Random (was "Random")
+  'Cascade',  // Up then down (ping-pong)
+  'Skip',     // Alternating intervals (1,3,5,2,4)
+  'Shimmer',  // Octave jumps for sparkle
+];
 
 // === STAB FX ===
 // Layout: 2x2 grid - top row (instant hits), bottom row (sweeps/builds)

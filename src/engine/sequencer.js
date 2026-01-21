@@ -72,6 +72,9 @@ export function initSequencer() {
     unlockedLanes[lane] = true;
   });
 
+  // Initialize character indices for hybrid lanes
+  initCharacterIndices();
+
   playhead = 0;
   currentCategory = 'drums';
   isInitialized = true;
@@ -419,6 +422,80 @@ export function getPatternIndices() {
   return { ...getActiveLayer().patternIndices };
 }
 
+// === HYBRID LANE FUNCTIONS (grid + cyclable characters) ===
+
+// Character indices for hybrid lanes (global - affects sound, not per-layer)
+let characterIndices = {};
+
+/**
+ * Initialize character indices for hybrid lanes
+ */
+function initCharacterIndices() {
+  LANE_ORDER.forEach(lane => {
+    const laneConfig = LANES[lane];
+    if (laneConfig.characters) {
+      characterIndices[lane] = laneConfig.defaultCharacter || 0;
+    }
+  });
+}
+
+/**
+ * Get character index for a hybrid lane
+ * @param {string} lane - Lane name
+ * @returns {number} Current character index
+ */
+export function getCharacterIndex(lane) {
+  return characterIndices[lane] || 0;
+}
+
+/**
+ * Cycle to next character for a hybrid lane
+ * @param {string} lane - Lane name
+ * @returns {number} New character index
+ */
+export function cycleCharacter(lane) {
+  const laneConfig = LANES[lane];
+  if (!laneConfig || !laneConfig.characters) return 0;
+
+  const characters = laneConfig.characters;
+  if (characters.length === 0) return 0;
+
+  const currentIndex = characterIndices[lane] || 0;
+  const newIndex = (currentIndex + 1) % characters.length;
+  characterIndices[lane] = newIndex;
+
+  return newIndex;
+}
+
+/**
+ * Get current character name for a hybrid lane
+ * @param {string} lane - Lane name
+ * @returns {string} Current character name
+ */
+export function getCharacterName(lane) {
+  const laneConfig = LANES[lane];
+  if (!laneConfig || !laneConfig.characters) return '';
+
+  const characters = laneConfig.characters;
+  const index = characterIndices[lane] || 0;
+  return characters[index] || '';
+}
+
+/**
+ * Set character index for a hybrid lane
+ * @param {string} lane - Lane name
+ * @param {number} index - Character index
+ */
+export function setCharacterIndex(lane, index) {
+  const laneConfig = LANES[lane];
+  if (!laneConfig || !laneConfig.characters) return;
+
+  const characters = laneConfig.characters;
+  if (index >= 0 && index < characters.length) {
+    characterIndices[lane] = index;
+  }
+}
+
 // === PLAYHEAD FUNCTIONS ===
 
 /**
@@ -672,6 +749,58 @@ export function getLanesForCategory(category) {
   return LANES_BY_CATEGORY[category] || [];
 }
 
+/**
+ * Toggle mute state for ALL lanes in a category (active layer)
+ * If any lane is unmuted, mutes all. If all muted, unmutes all.
+ * @param {string} category - Category name ('drums', 'bass', 'melodic')
+ * @returns {boolean} New mute state (true = all muted)
+ */
+export function toggleCategoryMute(category) {
+  const layer = getActiveLayer();
+  if (layer.locked) return isCategoryMuted(category);
+
+  const lanes = LANES_BY_CATEGORY[category] || [];
+  if (lanes.length === 0) return false;
+
+  // Check if all lanes are currently muted
+  const allMuted = lanes.every(lane => layer.mutedLanes[lane]);
+
+  // Toggle: if all muted → unmute all, otherwise → mute all
+  const newMuteState = !allMuted;
+
+  lanes.forEach(lane => {
+    layer.mutedLanes[lane] = newMuteState;
+  });
+
+  console.log(`Category ${category} ${newMuteState ? 'muted' : 'unmuted'}`);
+  return newMuteState;
+}
+
+/**
+ * Check if ALL lanes in a category are muted (active layer)
+ * @param {string} category - Category name
+ * @returns {boolean} True if all lanes in category are muted
+ */
+export function isCategoryMuted(category) {
+  const layer = getActiveLayer();
+  const lanes = LANES_BY_CATEGORY[category] || [];
+
+  if (lanes.length === 0) return false;
+  return lanes.every(lane => layer.mutedLanes[lane]);
+}
+
+/**
+ * Check if ANY lanes in a category are muted (for mixed state)
+ * @param {string} category - Category name
+ * @returns {boolean} True if at least one lane is muted
+ */
+export function hasCategoryMutedLanes(category) {
+  const layer = getActiveLayer();
+  const lanes = LANES_BY_CATEGORY[category] || [];
+
+  return lanes.some(lane => layer.mutedLanes[lane]);
+}
+
 // === CLEAR FUNCTIONS ===
 
 /**
@@ -719,6 +848,7 @@ export function disposeSequencer() {
   playhead = 0;
   stepListeners = [];
   unlockedLanes = {};
+  characterIndices = {};
   currentCategory = 'drums';
   isInitialized = false;
 }

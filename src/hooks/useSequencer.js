@@ -34,6 +34,13 @@ import {
   setActiveLayer as setActiveLayerFn,
   deleteLayer as deleteLayerFn,
   isLayerLocked,
+  // Category mute functions
+  toggleCategoryMute as toggleCategoryMuteFn,
+  isCategoryMuted as isCategoryMutedFn,
+  // Hybrid lane character functions
+  cycleCharacter as cycleCharacterFn,
+  getCharacterName,
+  getCharacterIndex,
 } from '../engine/sequencer.js';
 import {
   onStep,
@@ -51,24 +58,25 @@ import {
   playPerc,
   playSub,
   resetSubPattern,
+  setSubCharacter,
+  // Wobble functions
   startWobble,
   stopWobble,
-  setWobbleRate,
-  getWobbleRate,
+  setWobbleCharacter,
+  // Other pattern functions
   playChord,
   setChordProgression,
-  getChordProgression,
   playLead,
   setLeadPhrase,
-  getLeadPhrase,
   playArp,
   setArpMode,
-  getArpMode,
+  // Stab functions
   playImpact,
   playRiser,
   stopRiser,
   playLaser,
   playReverse,
+  // Build/drop functions
   setMasterHighpass,
   startSnareRoll,
   stopSnareRoll,
@@ -79,12 +87,13 @@ import {
   LANES,
   GRID_LANES,
   PATTERN_LANES,
+  HYBRID_LANES,
   LANES_BY_CATEGORY,
   BUILD_DROP,
   MAX_LAYERS,
 } from '../engine/constants.js';
 
-// Map synth names to play functions
+// Map synth names to play functions (grid lanes including hybrid)
 const SYNTH_PLAYERS = {
   kick: playKick,
   hat: playHat,
@@ -213,10 +222,7 @@ export function useSequencer() {
             playArp();
             break;
           case 'wobble':
-            // Start wobble if any layer has it active
-            if (!Object.values(wobbleActiveRef.current).some(v => v)) {
-              // Wobble wasn't active before, start it now
-            }
+            // Wobble is handled below (continuous synth)
             break;
         }
       });
@@ -335,14 +341,12 @@ export function useSequencer() {
 
     switch (lane) {
       case 'wobble':
-        // Convert pattern name to rate
-        const rateMap = { '1/4': '4n', '1/8': '8n', '1/16': '16n' };
-        const rate = rateMap[patternName] || '8n';
-        setWobbleRate(rate);
+        // Set wobble character (includes rate, LFO shape, filter params)
+        setWobbleCharacter(patternName);
         // Start wobble if not already running for this layer
-        const activeLayer = getActiveLayer();
-        if (activeLayer) {
-          const wobbleKey = `layer_${activeLayer.id}`;
+        const activeLayerWobble = getActiveLayer();
+        if (activeLayerWobble) {
+          const wobbleKey = `layer_${activeLayerWobble.id}`;
           if (!wobbleActiveRef.current[wobbleKey]) {
             startWobble();
             wobbleActiveRef.current[wobbleKey] = true;
@@ -361,12 +365,30 @@ export function useSequencer() {
     }
   }, [syncLayerState]);
 
+  // Cycle character for a hybrid lane (grid + sound variants)
+  const cycleCharacter = useCallback((lane) => {
+    // Check if this is a hybrid lane
+    if (!HYBRID_LANES.includes(lane)) return;
+
+    cycleCharacterFn(lane);
+    const characterName = getCharacterName(lane);
+
+    // Apply character change to audio
+    switch (lane) {
+      case 'sub':
+        setSubCharacter(characterName);
+        break;
+    }
+
+    return characterName;
+  }, []);
+
   // Toggle active state for a pattern lane
   const toggleActive = useCallback((lane) => {
     toggleActiveFn(lane);
     syncLayerState();
 
-    // Handle wobble special case
+    // Handle wobble special case (continuous synth)
     if (lane === 'wobble') {
       const activeLayer = getActiveLayer();
       if (activeLayer) {
@@ -395,6 +417,23 @@ export function useSequencer() {
   const togglePlay = useCallback(() => {
     const newState = togglePlayPause();
     setIsPlaying(newState);
+
+    if (!newState) {
+      // Pausing: stop continuous synths
+      stopWobble();
+      stopRiser();
+      stopSnareRoll();
+    } else {
+      // Resuming: restart wobble if any layer has it active
+      const allLayers = getAllLayers();
+      const anyWobbleActive = allLayers.some(l =>
+        l.activeLanes['wobble'] && !l.mutedLanes['wobble']
+      );
+      if (anyWobbleActive) {
+        startWobble();
+      }
+    }
+
     return newState;
   }, []);
 
@@ -405,7 +444,7 @@ export function useSequencer() {
     toggleMuteFn(lane);
     syncLayerState();
 
-    // Handle wobble mute
+    // Handle wobble mute (continuous synth)
     if (lane === 'wobble') {
       const activeLayer = getActiveLayer();
       if (activeLayer) {
@@ -445,6 +484,41 @@ export function useSequencer() {
     const newCategory = cycleCategoryFn();
     setCurrentCategoryState(newCategory);
     return newCategory;
+  }, []);
+
+  // Toggle mute for ALL lanes in a category
+  const toggleCategoryMute = useCallback((category) => {
+    const newMuteState = toggleCategoryMuteFn(category);
+    syncLayerState();
+
+    // Handle wobble specially for bass category (continuous synth)
+    if (category === 'bass') {
+      const activeLayer = getActiveLayer();
+      if (activeLayer) {
+        if (newMuteState) {
+          // Category muted - stop wobble if no other layer has it unmuted
+          const allLayers = getAllLayers();
+          const anyWobbleActive = allLayers.some(l =>
+            l.id !== activeLayer.id && l.activeLanes['wobble'] && !l.mutedLanes['wobble']
+          );
+          if (!anyWobbleActive) {
+            stopWobble();
+          }
+        } else {
+          // Category unmuted - restart wobble if it's active
+          if (isActiveFn('wobble')) {
+            startWobble();
+          }
+        }
+      }
+    }
+
+    return newMuteState;
+  }, [syncLayerState]);
+
+  // Check if a category is fully muted
+  const isCategoryMuted = useCallback((category) => {
+    return isCategoryMutedFn(category);
   }, []);
 
   // === TEMPO FUNCTIONS ===
@@ -565,6 +639,10 @@ export function useSequencer() {
     toggleActive,
     getPatternName,
 
+    // Hybrid lanes (grid + character variants like SUB)
+    cycleCharacter,
+    getCharacterName,
+
     // Layer management
     lockAndBuild,
     selectLayer,
@@ -583,6 +661,8 @@ export function useSequencer() {
     setCurrentCategory,
     cycleCategory,
     getCurrentCategoryLanes,
+    toggleCategoryMute,
+    isCategoryMuted,
 
     // Tempo
     increaseTempo: handleIncreaseTempo,

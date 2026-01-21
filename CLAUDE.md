@@ -82,7 +82,8 @@ onyx-pulse/
 
 | Type | Lanes | Interaction |
 |------|-------|-------------|
-| **Grid** | kick, hat, clap, perc, sub | 16-step tap-to-toggle |
+| **Grid** | kick, hat, clap, perc | 16-step tap-to-toggle |
+| **Hybrid** | sub | Grid triggers + tap header to cycle sound character |
 | **Pattern** | wobble, lead, chord, arp | Tap to cycle pre-made patterns |
 | **Stab** | laser, impact, reverse, riser | One-shot buttons (2x2 grid) |
 
@@ -106,6 +107,8 @@ Manages grid state, pattern state, categories, and lane activation.
 - `initSequencer()` — Initialize grid for all lanes
 - `toggleStep(lane, step)` — Toggle trigger on/off (grid lanes)
 - `cyclePattern(lane)` — Cycle to next pattern (pattern lanes)
+- `cycleCharacter(lane)` — Cycle to next sound character (hybrid lanes)
+- `getCharacterName(lane)` — Get current character name for display
 - `toggleActive(lane)` — Enable/disable a pattern lane
 - `getGrid()` / `getPlayhead()` — State getters
 - `toggleMute(lane)` — Mute/unmute a lane
@@ -134,13 +137,18 @@ Nine synthesizers + four stabs + build/drop system.
 | **HAT** | NoiseSynth + HP filter | Crisp hi-hat tick |
 | **CLAP** | NoiseSynth + BP filter | Snare-like burst |
 | **PERC** | MembraneSynth | Tuned percussion (cycles F3, C3, G3, D3) |
-| **SUB** | MonoSynth | Sub bass (C-minor pentatonic cycle) |
+
+#### Hybrid Lane Synths
+
+| Instrument | Synth Type | Characters |
+|------------|------------|------------|
+| **SUB** | MonoSynth | Deep, Punch, Growl, Reese, Acid, Rubber (tap header to cycle) |
 
 #### Pattern Lane Synths
 
-| Instrument | Synth Type | Patterns |
-|------------|------------|----------|
-| **WOBBLE** | MonoSynth + LFO | 1/4, 1/8, 1/16 rates |
+| Instrument | Synth Type | Patterns/Characters |
+|------------|------------|---------------------|
+| **WOBBLE** | MonoSynth + LFO | Smooth, Pulse, Growl, Sweep, Chop, Chaos (6 LFO characters) |
 | **CHORD** | PolySynth | i-VI-III-VII, i-VII-VI-VII, i-i-VI-VII |
 | **LEAD** | MonoSynth | Hook 1, Hook 2, Hook 3 |
 | **ARP** | MonoSynth | Up, Down, Random (Cm7 arpeggio) |
@@ -203,7 +211,7 @@ TEMPO_MAX = 160
 LANE_HEIGHT = 55
 TRIGGER_RADIUS = 10
 LANE_PADDING = 20
-HEADER_WIDTH = 60
+HEADER_WIDTH = 90      // Wider for character names (e.g., "SUB: Growl")
 STAB_BAR_HEIGHT = 100  // 2x2 stab grid
 
 // Categories
@@ -218,6 +226,7 @@ LANES_BY_CATEGORY = {
 // Lane Types
 GRID_LANES = ['kick', 'hat', 'clap', 'perc', 'sub']
 PATTERN_LANES = ['wobble', 'chord', 'lead', 'arp']
+HYBRID_LANES = ['sub']  // Grid triggers + cyclable sound characters
 
 // Scale (C Minor)
 C_MINOR_BASS = ['C2', 'Eb2', 'F2', 'G2', 'Bb2']
@@ -233,6 +242,26 @@ BUILD_DROP = {
   kickMuteThreshold: 75,
   snareRollThresholds: { 0: null, 40: '8n', 65: '16n', 85: '32n' }
 }
+
+// SUB Characters (oscillator, filter, envelope variations)
+SUB_CHARACTERS = {
+  'Deep':   { oscillator: 'triangle', filterQ: 1, filterFreq: 200 },
+  'Punch':  { oscillator: 'sine', filterQ: 1.5, filterFreq: 300 },
+  'Growl':  { oscillator: 'sawtooth', filterQ: 3, filterFreq: 400 },
+  'Reese':  { oscillator: 'sawtooth', filterQ: 2, detune: 12 },
+  'Acid':   { oscillator: 'square', filterQ: 8, filterFreq: 500 },
+  'Rubber': { oscillator: 'fmsine', filterQ: 2, harmonicity: 0.5 },
+}
+
+// WOBBLE Characters (LFO shape, rate, filter range)
+WOBBLE_CHARACTERS = {
+  'Smooth': { rate: '4n', shape: 'sine', filterMax: 1500 },
+  'Pulse':  { rate: '8n', shape: 'square', filterMax: 1200 },
+  'Growl':  { rate: '8n', shape: 'triangle', filterQ: 8 },
+  'Sweep':  { rate: '2n', shape: 'sine', filterMax: 2500 },
+  'Chop':   { rate: '16n', shape: 'square', filterMax: 1000 },
+  'Chaos':  { rate: '8n', shape: 'random', filterMax: 2000 },
+}
 ```
 
 ---
@@ -247,19 +276,30 @@ BUILD_DROP = {
 | Double-tap | Lane header | Toggle mute |
 | Long-press (500ms) | Lane header | Clear all triggers |
 
+### Hybrid Lane Interactions (SUB)
+
+| Gesture | Target | Action |
+|---------|--------|--------|
+| Tap | Grid cell | Toggle trigger on/off |
+| Tap | Lane header | Cycle to next sound character (when unmuted) |
+| Double-tap | Lane header | Toggle mute |
+| Long-press (500ms) | Lane header | Clear all triggers |
+
 ### Pattern Lane Interactions
 
 | Gesture | Target | Action |
 |---------|--------|--------|
-| Tap | Pattern lane area | Cycle to next pattern |
+| Tap | Pattern lane area | Cycle to next pattern (when unmuted) |
 | Double-tap | Lane header | Toggle mute |
 | Long-press (500ms) | Lane header | Deactivate pattern |
+
+**Note:** Pattern/character cycling is blocked when a lane is muted. Double-tap to unmute first.
 
 ### UI Controls
 
 | Control | Location | Action |
 |---------|----------|--------|
-| Category tabs | Control strip (left) | Switch between DRUMS/BASS/MELODIC |
+| Category tabs | Control strip (left) | Tap to switch category; double-tap to mute/unmute all lanes in category |
 | Layer dots | Control strip | ● active, ◆ locked — tap to select |
 | BUILD slider | Control strip | Drag to build tension (0-100%) |
 | DROP button | Control strip | Trigger the drop |
@@ -380,22 +420,27 @@ export function SequencerCanvas() {
 Before any commit:
 
 1. **Fresh browser** — Audio starts on first tap
-2. **Category tabs** — All three categories switch correctly
+2. **Category tabs** — Tap switches category; double-tap mutes/unmutes all lanes in category
 3. **Grid lanes** — Tap to toggle, sounds play
-4. **Pattern lanes** — Tap to cycle patterns, patterns play
-5. **Double-tap mute** — Toggles on/off correctly
-6. **Long-press clear** — Clears grid lanes / deactivates pattern lanes
-7. **BUILD slider** — Drag works, filter sweeps audibly
-8. **DROP button** — Impact plays, filter resets
-9. **Stab buttons** — All four play distinct sounds (2x2 grid)
-10. **Tempo control** — +/- buttons work (80-160 range)
-11. **Layer system** — LOCK+BUILD creates layers, dots switch between them
-12. **Recording** — REC starts/stops, timer counts down, download works
-13. **60fps** — Smooth playhead, no stuttering
-14. **Mobile** — Touch interactions work
+4. **Hybrid lanes (SUB)** — Tap header cycles characters (Deep→Punch→Growl→Reese→Acid→Rubber)
+5. **Pattern lanes** — Tap to cycle patterns, patterns play
+6. **Double-tap mute** — Toggles on/off correctly for all lane types
+7. **Muted lane blocking** — Muted lanes don't cycle patterns/characters on tap (must double-tap to unmute first)
+8. **Long-press clear** — Clears grid lanes / deactivates pattern lanes
+9. **BUILD slider** — Drag works, filter sweeps audibly
+10. **DROP button** — Impact plays, filter resets
+11. **Stab buttons** — All four play distinct sounds (2x2 grid)
+12. **Tempo control** — +/- buttons work (80-160 range)
+13. **Layer system** — LOCK+BUILD creates layers, dots switch between them
+14. **Recording** — REC starts/stops, timer counts down, download works
+15. **60fps** — Smooth playhead, no stuttering
+16. **Mobile** — Touch interactions work
 
 Full integration test:
 - Enable all lane types across categories
+- Cycle SUB characters (tap header), verify distinct sounds
+- Cycle WOBBLE characters, verify LFO variations
+- Double-tap category tab to mute all, double-tap again to unmute
 - Create 2 layers with LOCK+BUILD
 - Drag tension to 100%, hit DROP
 - Tap stabs during playback
@@ -456,17 +501,19 @@ Full integration test:
 The project is complete when:
 
 - [x] Category-based lane system (DRUMS/BASS/MELODIC)
-- [x] 5 grid lanes (kick, hat, clap, perc, sub)
+- [x] 4 grid lanes (kick, hat, clap, perc)
+- [x] 1 hybrid lane (sub) — grid triggers + cyclable sound characters
 - [x] 4 pattern lanes (wobble, chord, lead, arp)
 - [x] 4 stab buttons (laser, impact, reverse, riser) — 2x2 grid
 - [x] BUILD slider + DROP button
 - [x] Tap to toggle grid triggers
-- [x] Tap to cycle pattern lanes
+- [x] Tap to cycle pattern lanes / hybrid characters
 - [x] Playhead loops at 128 BPM (adjustable 80-160)
 - [x] All sounds distinct and musical
 - [x] Sidechain pump on kick
 - [x] Visual feedback (flash, ripple, breathing, drop flash)
 - [x] Mute/clear lane gestures
+- [x] Category mute (double-tap category tab)
 - [x] Tempo control UI
 - [x] Layer system (2 layers max, LOCK+BUILD)
 - [x] Recording (60 sec, graceful fade, download)
@@ -500,8 +547,17 @@ It evolved through multiple phases:
 - Post-recording overlay with GO BACK / DOWNLOAD buttons
 - WebM audio export
 
+**Phase 4 (Bass Enhancement):**
+- Boosted bass volumes (SUB: -6dB, WOBBLE: -8dB) — bass is the heart of EDM
+- SUB as hybrid lane — grid triggers + 6 cyclable sound characters
+- SUB characters: Deep, Punch, Growl, Reese, Acid, Rubber (tap header to cycle)
+- WOBBLE expanded to 6 character patterns: Smooth, Pulse, Growl, Sweep, Chop, Chaos
+- Category mute — double-tap category tab to mute/unmute all lanes
+- Muted lane blocking — pattern/character cycling blocked until unmuted
+- Wider header (90px) to accommodate character names
+
 The archived docs preserve the original vision for reference.
 
 ---
 
-*Last Updated: January 2026 (Post-Recording Feature)*
+*Last Updated: January 2026 (Phase 4: Bass Enhancement)*

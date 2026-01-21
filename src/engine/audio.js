@@ -5,6 +5,9 @@ import {
   CHORD_PROGRESSIONS,
   LEAD_PHRASES,
   ARP_NOTES,
+  ARP_MODES,
+  SUB_CHARACTERS,
+  WOBBLE_CHARACTERS,
   LAYER_GAIN_DB,
   RECORDING,
 } from './constants.js';
@@ -58,11 +61,16 @@ let arpNoteIndex = 0;
 let arpDirection = 1; // 1 = up, -1 = down
 
 // Pattern state
-let wobbleRate = '8n'; // Current wobble LFO rate
-let currentChordProgression = 'i-VI-III-VII';
+let currentSubCharacter = 'Deep'; // Deep, Punch, Growl, Reese, Acid, Rubber
+let currentWobbleCharacter = 'Smooth'; // Smooth, Pulse, Growl, Sweep, Chop, Chaos
+let currentChordProgression = 'Epic Rise';
 let currentChordIndex = 0;
-let currentLeadPhrase = 'Hook 1';
-let currentArpMode = 'Up'; // Up, Down, Random
+let currentLeadPhrase = 'Soar';
+let currentArpMode = 'Climb'; // Climb, Fall, Scatter, Cascade, Skip, Shimmer
+let arpPingPongDirection = 1; // For Cascade mode: 1 = up, -1 = down
+
+// Sub bass state (for continuous playback as pattern lane)
+let subIsPlaying = false;
 
 /**
  * Initialize the audio engine
@@ -80,11 +88,12 @@ export async function initAudio() {
     // Recording fade gain (for graceful fade-out during recording)
     recordingFadeGain = new Tone.Gain(1).toDestination();
 
+    // Gentler master compressor - less pumping, more transparent
     masterCompressor = new Tone.Compressor({
-      threshold: -24,
-      ratio: 4,
-      attack: 0.003,
-      release: 0.25,
+      threshold: -12,    // Higher threshold = less constant compression
+      ratio: 3,          // Gentler ratio
+      attack: 0.01,      // Slower attack = less pumping on transients
+      release: 0.15,     // Faster release = more natural recovery
     }).connect(recordingFadeGain);
 
     masterLimiter = new Tone.Limiter(-1).connect(masterCompressor);
@@ -108,130 +117,135 @@ export async function initAudio() {
     sidechainGain = new Tone.Gain(1).connect(masterHighpass);
 
     // === KICK SYNTH (808-Style) ===
+    // Tighter envelope prevents overlap on rapid triggers
     kickSynth = new Tone.MembraneSynth({
-      pitchDecay: 0.05,
-      octaves: 6,
+      pitchDecay: 0.04,       // Slightly faster pitch drop
+      octaves: 5,             // Less extreme pitch range = cleaner
       oscillator: { type: 'sine' },
       envelope: {
         attack: 0.001,
-        decay: 0.25,
+        decay: 0.15,          // Tighter decay (was 0.25)
         sustain: 0,
-        release: 0.3,
+        release: 0.08,        // Much tighter release (was 0.3)
       },
     }).connect(masterHighpass); // Kick bypasses sidechain
 
-    kickSynth.volume.value = -3;
+    kickSynth.volume.value = -6;  // Foundation - loudest drum element
 
     // === HAT SYNTH (High-passed noise for crisp tick) ===
     hatFilter = new Tone.Filter({
-      frequency: 8000,
+      frequency: 7000,        // Slightly lower = less harsh
       type: 'highpass',
-      Q: 1,
+      Q: 0.7,                 // Lower Q = smoother, less resonant peak
     }).connect(sidechainGain);
 
     hatSynth = new Tone.NoiseSynth({
       noise: { type: 'white' },
       envelope: {
-        attack: 0.001,
-        decay: 0.06,
+        attack: 0.002,        // Tiny attack softens the click
+        decay: 0.05,          // Slightly tighter
         sustain: 0,
-        release: 0.03,
+        release: 0.02,
       },
     }).connect(hatFilter);
 
-    hatSynth.volume.value = -4;
+    hatSynth.volume.value = -12;  // High-end detail, sits behind kick
 
     // === CLAP SYNTH (Filtered noise burst) ===
     clapFilter = new Tone.Filter({
-      frequency: 2500,
+      frequency: 2200,        // Slightly lower center frequency
       type: 'bandpass',
-      Q: 2,
+      Q: 1.2,                 // Lower Q = less peaky, smoother
     }).connect(sidechainGain);
 
     clapSynth = new Tone.NoiseSynth({
-      noise: { type: 'white' },
+      noise: { type: 'pink' },  // Pink noise = warmer than white
       envelope: {
-        attack: 0.005,
-        decay: 0.15,
+        attack: 0.003,
+        decay: 0.1,           // Tighter decay (was 0.15)
         sustain: 0,
-        release: 0.1,
+        release: 0.05,        // Tighter release (was 0.1)
       },
     }).connect(clapFilter);
 
     clapSynth.volume.value = -8;
 
     // === PERC SYNTH (Tuned percussion, cycling pitches) ===
+    // Tighter envelope for cleaner rapid triggers
     percSynth = new Tone.MembraneSynth({
-      pitchDecay: 0.02,
-      octaves: 2,
+      pitchDecay: 0.015,      // Faster pitch drop
+      octaves: 1.5,           // Less extreme = cleaner
       oscillator: { type: 'sine' },
       envelope: {
         attack: 0.001,
-        decay: 0.15,
+        decay: 0.08,          // Tighter (was 0.15)
         sustain: 0,
-        release: 0.1,
+        release: 0.04,        // Tighter (was 0.1)
       },
     }).connect(sidechainGain);
 
-    percSynth.volume.value = -8;
+    percSynth.volume.value = -10;  // Slightly lower
 
     // === SUB SYNTH (Sub bass with filter) ===
+    // Tighter envelope + lower Q for cleaner bass
     subSynth = new Tone.MonoSynth({
-      oscillator: { type: 'square' },
+      oscillator: { type: 'triangle' },  // Triangle = cleaner than square
       filter: {
-        Q: 2,
+        Q: 1,                   // Lower Q = less resonant
         type: 'lowpass',
         rolloff: -24,
       },
       envelope: {
         attack: 0.005,
-        decay: 0.2,
-        sustain: 0.4,
-        release: 0.3,
+        decay: 0.12,            // Tighter (was 0.2)
+        sustain: 0.3,
+        release: 0.1,           // Much tighter (was 0.3)
       },
       filterEnvelope: {
         attack: 0.01,
-        decay: 0.2,
-        sustain: 0.3,
-        release: 0.3,
-        baseFrequency: 100,
-        octaves: 2,
+        decay: 0.15,
+        sustain: 0.2,
+        release: 0.1,
+        baseFrequency: 80,      // Lower base = deeper bass
+        octaves: 1.5,
       },
     }).connect(sidechainGain);
 
-    subSynth.volume.value = -6;
+    subSynth.volume.value = -6;  // BASS IS THE HEART - equal presence with kick
 
     // === WOBBLE SYNTH (Dubstep bass with LFO) ===
+    // Lower Q for smoother wobble without harsh resonance
     wobbleSynth = new Tone.MonoSynth({
       oscillator: { type: 'sawtooth' },
       filter: {
-        Q: 6,
+        Q: 3,                   // Lower Q (was 6) = smoother
         type: 'lowpass',
         rolloff: -24,
       },
       envelope: {
         attack: 0.01,
         decay: 0.1,
-        sustain: 0.8,
-        release: 0.3,
+        sustain: 0.7,
+        release: 0.15,          // Tighter release
       },
       filterEnvelope: {
         attack: 0.01,
         decay: 0.1,
-        sustain: 0.5,
-        release: 0.3,
-        baseFrequency: 200,
-        octaves: 3,
+        sustain: 0.4,
+        release: 0.15,
+        baseFrequency: 150,     // Lower base frequency
+        octaves: 2.5,
       },
     }).connect(sidechainGain);
 
-    wobbleSynth.volume.value = -8;
+    wobbleSynth.volume.value = -8;  // BASS IS THE HEART - prominent wobble
 
     // LFO for wobble filter modulation
+    // Lower max frequency for smoother wobble
     wobbleLFO = new Tone.LFO({
       frequency: '8n',
-      min: 100,
-      max: 2000,
+      min: 80,
+      max: 1200,              // Lower max (was 2000) = less harsh
       type: 'sine',
     });
     wobbleLFO.connect(wobbleSynth.filter.frequency);
@@ -247,7 +261,7 @@ export async function initAudio() {
       },
     }).connect(sidechainGain);
 
-    chordSynth.volume.value = -6;
+    chordSynth.volume.value = -12;  // Harmonic bed, fills space without dominating
 
     // === LEAD SYNTH (Mono lead for hooks) ===
     leadSynth = new Tone.MonoSynth({
@@ -407,6 +421,7 @@ export function isAudioReady() {
 
 /**
  * Trigger sidechain compression
+ * Uses exponential curves for smoother, more musical ducking
  */
 function triggerSidechain() {
   if (!sidechainGain) return;
@@ -414,19 +429,27 @@ function triggerSidechain() {
   const now = Tone.now();
   sidechainGain.gain.cancelScheduledValues(now);
   sidechainGain.gain.setValueAtTime(1, now);
-  sidechainGain.gain.linearRampToValueAtTime(0.3, now + 0.01);
-  sidechainGain.gain.linearRampToValueAtTime(1, now + 0.15);
+  // Gentler duck: 0.5 instead of 0.3, slower attack for less "pumpy" sound
+  sidechainGain.gain.exponentialRampToValueAtTime(0.5, now + 0.015);
+  // Smoother release curve
+  sidechainGain.gain.exponentialRampToValueAtTime(0.95, now + 0.1);
+  sidechainGain.gain.linearRampToValueAtTime(1, now + 0.12);
 
   emitSidechain(1);
 }
 
 /**
  * Play kick drum
+ * Uses voice stealing to prevent "popcorn" sound from overlapping kicks
  */
 export function playKick() {
   if (!isInitialized || !kickSynth) return;
 
-  kickSynth.triggerAttackRelease('C1', '8n', Tone.now(), 0.9);
+  const now = Tone.now();
+  // Cut off any previous kick immediately to prevent overlap artifacts
+  kickSynth.triggerRelease(now);
+  // Trigger new kick with tiny offset to allow clean cutoff
+  kickSynth.triggerAttackRelease('C1', '8n', now + 0.002, 0.9);
   triggerSidechain();
 }
 
@@ -450,23 +473,67 @@ export function playClap() {
 
 /**
  * Play perc (cycling through pitches)
+ * Uses voice stealing to prevent overlap artifacts
  */
 export function playPerc() {
   if (!isInitialized || !percSynth) return;
 
+  const now = Tone.now();
   const pitch = PERC_PITCHES[percPitchIndex];
-  percSynth.triggerAttackRelease(pitch, '16n', Tone.now(), 0.7);
+  // Cut off any previous perc to prevent overlap
+  percSynth.triggerRelease(now);
+  percSynth.triggerAttackRelease(pitch, '16n', now + 0.002, 0.7);
   percPitchIndex = (percPitchIndex + 1) % PERC_PITCHES.length;
 }
 
 /**
- * Play sub bass note (cycles through C-minor pentatonic)
+ * Start sub bass (continuous drone, pitch cycles on beat)
+ * SUB is now a pattern lane - plays continuously when active
+ */
+export function startSub() {
+  if (!isInitialized || !subSynth || subIsPlaying) return;
+
+  const note = C_MINOR_BASS[subNoteIndex];
+  subSynth.triggerAttack(note, Tone.now(), 0.9);
+  subIsPlaying = true;
+}
+
+/**
+ * Stop sub bass
+ */
+export function stopSub() {
+  if (!subSynth) return;
+
+  subSynth.triggerRelease(Tone.now());
+  subIsPlaying = false;
+}
+
+/**
+ * Advance sub bass to next note (called on beat)
+ * Smoothly transitions to next note in C minor pentatonic
+ */
+export function advanceSubNote() {
+  if (!isInitialized || !subSynth || !subIsPlaying) return;
+
+  subNoteIndex = (subNoteIndex + 1) % C_MINOR_BASS.length;
+  const note = C_MINOR_BASS[subNoteIndex];
+
+  // Glide to next note for smooth bass movement
+  subSynth.setNote(note, Tone.now());
+}
+
+/**
+ * Play sub bass note (one-shot, for backwards compatibility)
+ * Uses voice stealing to prevent overlap artifacts
  */
 export function playSub() {
   if (!isInitialized || !subSynth) return;
 
+  const now = Tone.now();
   const note = C_MINOR_BASS[subNoteIndex];
-  subSynth.triggerAttackRelease(note, '8n', Tone.now(), 0.8);
+  // Cut off any previous sub note to prevent overlap
+  subSynth.triggerRelease(now);
+  subSynth.triggerAttackRelease(note, '8n', now + 0.002, 0.9);
   subNoteIndex = (subNoteIndex + 1) % C_MINOR_BASS.length;
 }
 
@@ -475,6 +542,63 @@ export function playSub() {
  */
 export function resetSubPattern() {
   subNoteIndex = 0;
+}
+
+/**
+ * Set sub bass character
+ * @param {string} name - Character name from SUB_CHARACTERS
+ */
+export function setSubCharacter(name) {
+  if (!SUB_CHARACTERS[name] || !subSynth) return;
+
+  const char = SUB_CHARACTERS[name];
+  currentSubCharacter = name;
+
+  // Update synth parameters based on character
+  try {
+    // Update oscillator type
+    if (char.oscillator === 'fmsine') {
+      // FM sine needs special handling - use sine with slight FM-like attack
+      subSynth.oscillator.type = 'sine';
+    } else {
+      subSynth.oscillator.type = char.oscillator;
+    }
+
+    // Update filter
+    subSynth.filter.Q.value = char.filterQ;
+    subSynth.filterEnvelope.baseFrequency = char.filterFreq;
+
+    // Update envelope
+    subSynth.envelope.attack = char.attack;
+    subSynth.envelope.decay = char.decay;
+    subSynth.envelope.sustain = char.sustain;
+    subSynth.envelope.release = char.release;
+
+    // Handle detune for Reese bass
+    if (char.detune) {
+      subSynth.detune.value = char.detune;
+    } else {
+      subSynth.detune.value = 0;
+    }
+
+    console.log(`Sub character set to: ${name}`);
+  } catch (error) {
+    console.warn(`Failed to set sub character ${name}:`, error);
+  }
+}
+
+/**
+ * Get current sub character name
+ */
+export function getSubCharacter() {
+  return currentSubCharacter;
+}
+
+/**
+ * Check if sub is playing
+ */
+export function isSubPlaying() {
+  return subIsPlaying;
 }
 
 // Legacy aliases for backwards compatibility
@@ -488,7 +612,7 @@ export function startWobble() {
   if (!isInitialized || !wobbleSynth || !wobbleLFO) return;
 
   wobbleLFO.start();
-  wobbleSynth.triggerAttack('C2', Tone.now(), 0.7);
+  wobbleSynth.triggerAttack('C2', Tone.now(), 0.8);
 }
 
 /**
@@ -502,21 +626,67 @@ export function stopWobble() {
 }
 
 /**
- * Set wobble LFO rate
+ * Set wobble character
+ * @param {string} name - Character name from WOBBLE_CHARACTERS
+ */
+export function setWobbleCharacter(name) {
+  if (!WOBBLE_CHARACTERS[name]) return;
+
+  const char = WOBBLE_CHARACTERS[name];
+  currentWobbleCharacter = name;
+
+  if (wobbleLFO) {
+    // Set LFO rate
+    wobbleLFO.frequency.value = char.rate;
+
+    // Set LFO shape (random uses square with sample-hold effect)
+    if (char.shape === 'random') {
+      // For chaos mode, use a faster rate with random-ish behavior
+      wobbleLFO.type = 'square';
+      // We'll simulate randomness by using a non-musical rate
+      wobbleLFO.frequency.value = '8t'; // Triplet timing for off-grid feel
+    } else {
+      wobbleLFO.type = char.shape;
+    }
+
+    // Set filter range
+    wobbleLFO.min = char.filterMin;
+    wobbleLFO.max = char.filterMax;
+  }
+
+  if (wobbleSynth) {
+    // Set filter Q for resonance character
+    wobbleSynth.filter.Q.value = char.filterQ;
+  }
+
+  console.log(`Wobble character set to: ${name}`);
+}
+
+/**
+ * Get current wobble character name
+ */
+export function getWobbleCharacter() {
+  return currentWobbleCharacter;
+}
+
+/**
+ * Legacy: Set wobble LFO rate (for backwards compatibility)
  * @param {string} rate - '4n', '8n', or '16n'
  */
 export function setWobbleRate(rate) {
-  wobbleRate = rate;
   if (wobbleLFO) {
     wobbleLFO.frequency.value = rate;
   }
 }
 
 /**
- * Get current wobble rate
+ * Legacy: Get current wobble rate
  */
 export function getWobbleRate() {
-  return wobbleRate;
+  if (wobbleLFO) {
+    return wobbleLFO.frequency.value;
+  }
+  return '8n';
 }
 
 /**
@@ -553,6 +723,7 @@ export function getChordProgression() {
 
 /**
  * Play lead note (cycling through phrase)
+ * Uses voice stealing to prevent overlap artifacts
  */
 export function playLead() {
   if (!isInitialized || !leadSynth) return;
@@ -560,8 +731,11 @@ export function playLead() {
   const phrase = LEAD_PHRASES[currentLeadPhrase];
   if (!phrase) return;
 
+  const now = Tone.now();
   const note = phrase[leadNoteIndex];
-  leadSynth.triggerAttackRelease(note, '16n', Tone.now(), 0.7);
+  // Cut off any previous lead note to prevent overlap
+  leadSynth.triggerRelease(now);
+  leadSynth.triggerAttackRelease(note, '16n', now + 0.002, 0.7);
   leadNoteIndex = (leadNoteIndex + 1) % phrase.length;
 }
 
@@ -585,38 +759,87 @@ export function getLeadPhrase() {
 
 /**
  * Play arp note (based on current mode)
+ * Uses voice stealing to prevent overlap artifacts
  */
 export function playArp() {
   if (!isInitialized || !arpSynth) return;
 
   let note;
+  const len = ARP_NOTES.length;
+
   switch (currentArpMode) {
-    case 'Up':
+    case 'Climb':
+      // Ascending: C3 → Eb3 → G3 → Bb3 → C4 → repeat
       note = ARP_NOTES[arpNoteIndex];
-      arpNoteIndex = (arpNoteIndex + 1) % ARP_NOTES.length;
+      arpNoteIndex = (arpNoteIndex + 1) % len;
       break;
-    case 'Down':
-      note = ARP_NOTES[ARP_NOTES.length - 1 - arpNoteIndex];
-      arpNoteIndex = (arpNoteIndex + 1) % ARP_NOTES.length;
+
+    case 'Fall':
+      // Descending: C4 → Bb3 → G3 → Eb3 → C3 → repeat
+      note = ARP_NOTES[len - 1 - arpNoteIndex];
+      arpNoteIndex = (arpNoteIndex + 1) % len;
       break;
-    case 'Random':
-      note = ARP_NOTES[Math.floor(Math.random() * ARP_NOTES.length)];
+
+    case 'Scatter':
+      // Random note each time
+      note = ARP_NOTES[Math.floor(Math.random() * len)];
       break;
+
+    case 'Cascade':
+      // Ping-pong: up then down (C3→Eb3→G3→Bb3→C4→Bb3→G3→Eb3→repeat)
+      note = ARP_NOTES[arpNoteIndex];
+      arpNoteIndex += arpPingPongDirection;
+      if (arpNoteIndex >= len - 1) {
+        arpNoteIndex = len - 1;
+        arpPingPongDirection = -1;
+      } else if (arpNoteIndex <= 0) {
+        arpNoteIndex = 0;
+        arpPingPongDirection = 1;
+      }
+      break;
+
+    case 'Skip':
+      // Alternating intervals: 1st, 3rd, 5th, 2nd, 4th (indices: 0,2,4,1,3)
+      const skipPattern = [0, 2, 4, 1, 3];
+      note = ARP_NOTES[skipPattern[arpNoteIndex % skipPattern.length]];
+      arpNoteIndex = (arpNoteIndex + 1) % skipPattern.length;
+      break;
+
+    case 'Shimmer':
+      // Octave jumps: plays note then octave up (C3,C4,Eb3,Eb4,G3,G4...)
+      const baseIndex = Math.floor(arpNoteIndex / 2) % (len - 1); // Skip last C4
+      const isOctaveUp = arpNoteIndex % 2 === 1;
+      const baseNote = ARP_NOTES[baseIndex];
+      // Parse note and add octave if needed
+      if (isOctaveUp) {
+        const noteName = baseNote.slice(0, -1);
+        const octave = parseInt(baseNote.slice(-1)) + 1;
+        note = noteName + octave;
+      } else {
+        note = baseNote;
+      }
+      arpNoteIndex = (arpNoteIndex + 1) % ((len - 1) * 2);
+      break;
+
     default:
       note = ARP_NOTES[0];
   }
 
-  arpSynth.triggerAttackRelease(note, '16n', Tone.now(), 0.7);
+  const now = Tone.now();
+  // Cut off any previous arp note to prevent overlap
+  arpSynth.triggerRelease(now);
+  arpSynth.triggerAttackRelease(note, '16n', now + 0.002, 0.7);
 }
 
 /**
  * Set arp mode
- * @param {string} mode - 'Up', 'Down', or 'Random'
+ * @param {string} mode - One of ARP_MODES: 'Climb', 'Fall', 'Scatter', 'Cascade', 'Skip', 'Shimmer'
  */
 export function setArpMode(mode) {
-  if (['Up', 'Down', 'Random'].includes(mode)) {
+  if (ARP_MODES.includes(mode)) {
     currentArpMode = mode;
     arpNoteIndex = 0;
+    arpPingPongDirection = 1; // Reset for Cascade mode
   }
 }
 
@@ -965,4 +1188,7 @@ export function disposeAudio() {
   arpNoteIndex = 0;
   isRecording = false;
   recordingBlob = null;
+  subIsPlaying = false;
+  currentSubCharacter = 'Deep';
+  currentWobbleCharacter = 'Smooth';
 }

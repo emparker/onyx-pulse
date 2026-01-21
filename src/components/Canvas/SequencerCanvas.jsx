@@ -16,6 +16,7 @@ import {
   CATEGORIES,
   CATEGORY_ORDER,
   LANES_BY_CATEGORY,
+  HYBRID_LANES,
   STABS,
   STAB_ORDER,
   MAX_LAYERS,
@@ -50,7 +51,11 @@ export function SequencerCanvas() {
     clearLane,
     toggleActive,
     cyclePattern,
+    cycleCharacter,
+    getCharacterName,
     setCurrentCategory,
+    toggleCategoryMute,
+    isCategoryMuted,
     increaseTempo,
     decreaseTempo,
     setTension,
@@ -101,6 +106,10 @@ export function SequencerCanvas() {
   const lastTapRef = useRef({ laneId: null, time: 0 });
   const longPressTimerRef = useRef(null);
   const longPressLaneRef = useRef(null);
+
+  // Category tab long-press state
+  const lastCategoryTapRef = useRef({ catId: null, time: 0 });
+  const categoryMuteFlashRef = useRef({}); // { categoryId: flashIntensity }
 
   // Tension slider drag state
   const isDraggingTensionRef = useRef(false);
@@ -245,6 +254,14 @@ export function SequencerCanvas() {
         }
       }
 
+      // Decay category mute flashes
+      for (const key in categoryMuteFlashRef.current) {
+        categoryMuteFlashRef.current[key] *= 0.88;
+        if (categoryMuteFlashRef.current[key] < 0.01) {
+          delete categoryMuteFlashRef.current[key];
+        }
+      }
+
       // Update ripples (optimized: mutate in-place, limit count)
       let rippleWriteIdx = 0;
       for (let i = 0; i < rippleRef.current.length; i++) {
@@ -326,25 +343,44 @@ export function SequencerCanvas() {
       CATEGORY_ORDER.forEach((catId, index) => {
         const cat = CATEGORIES[catId];
         const isActive = catId === currentCategory;
+        const isMuted = isCategoryMuted(catId);
+        const muteFlash = categoryMuteFlashRef.current[catId] || 0;
         const tabX = index * tabWidth;
 
-        // Active tab indicator (bottom border)
-        if (isActive) {
+        // Flash overlay when toggling mute
+        if (muteFlash > 0.1) {
+          ctx.fillStyle = isMuted ? `rgba(255, 0, 0, ${muteFlash * 0.3})` : `rgba(0, 255, 255, ${muteFlash * 0.3})`;
+          ctx.fillRect(tabX, 0, tabWidth, layout.controlStripHeight);
+        }
+
+        // Active tab indicator (bottom border) - hide if muted
+        if (isActive && !isMuted) {
           ctx.fillStyle = cat.color;
           ctx.fillRect(tabX + 4, layout.controlStripHeight - 3, tabWidth - 8, 3);
         }
 
+        // Muted indicator (red dot above tab name)
+        if (isMuted) {
+          ctx.fillStyle = '#ef4444';
+          ctx.beginPath();
+          ctx.arc(tabX + tabWidth / 2, stripCenterY - 14, 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
         // Tab text
         ctx.save();
-        ctx.fillStyle = isActive ? cat.color : '#555555';
-        ctx.font = `bold 11px monospace`;
+        const textColor = isMuted ? '#666666' : (isActive ? cat.color : '#555555');
+        ctx.fillStyle = textColor;
+        ctx.font = `bold ${isMuted ? '10px' : '11px'} monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        if (isActive && perf.glowEnabled) {
+        if (isActive && !isMuted && perf.glowEnabled) {
           ctx.shadowColor = cat.color;
           ctx.shadowBlur = perf.shadowBlur * 0.5;
         }
-        ctx.fillText(cat.name, tabX + tabWidth / 2, stripCenterY);
+        // Show [M] prefix when muted
+        const displayName = isMuted ? `[M]${cat.name}` : cat.name;
+        ctx.fillText(displayName, tabX + tabWidth / 2, stripCenterY);
         ctx.restore();
       });
 
@@ -627,6 +663,8 @@ export function SequencerCanvas() {
         }
 
         let displayName = lane.name;
+        const isHybridLane = HYBRID_LANES.includes(laneId);
+
         if (isLaneMuted) {
           displayName = `[M] ${lane.name}`;
         } else if (isPatternLane && isLaneActive) {
@@ -634,6 +672,10 @@ export function SequencerCanvas() {
           displayName = `${lane.name}: ${patternName}`;
         } else if (isPatternLane) {
           displayName = `${lane.name} [tap]`;
+        } else if (isHybridLane) {
+          // Hybrid lane: show current character name
+          const characterName = getCharacterName(laneId);
+          displayName = characterName ? `${lane.name}: ${characterName}` : lane.name;
         }
 
         ctx.fillText(displayName, LANE_PADDING + 4, laneY + layout.laneHeight / 2);
@@ -901,12 +943,27 @@ export function SequencerCanvas() {
     if (y >= 0 && y < layout.controlStripHeight) {
       const stripCenterY = layout.controlStripHeight / 2;
 
-      // Zone 1: Category tabs
+      // Zone 1: Category tabs - tap to switch, double-tap to mute all
       if (x < layout.categoryZoneWidth) {
         const tabWidth = layout.categoryZoneWidth / CATEGORY_ORDER.length;
         const tabIndex = Math.floor(x / tabWidth);
         if (tabIndex >= 0 && tabIndex < CATEGORY_ORDER.length) {
-          setCurrentCategory(CATEGORY_ORDER[tabIndex]);
+          const catId = CATEGORY_ORDER[tabIndex];
+          const now = Date.now();
+          const timeSinceLastTap = now - lastCategoryTapRef.current.time;
+          const isSameCategory = lastCategoryTapRef.current.catId === catId;
+
+          // Double-tap = toggle category mute
+          if (isSameCategory && timeSinceLastTap < 400) {
+            toggleCategoryMute(catId);
+            categoryMuteFlashRef.current[catId] = 1;
+            lastCategoryTapRef.current = { catId: null, time: 0 };
+            return;
+          }
+
+          // Single tap = switch category
+          lastCategoryTapRef.current = { catId, time: now };
+          setCurrentCategory(catId);
         }
         return;
       }
@@ -1003,6 +1060,7 @@ export function SequencerCanvas() {
     const laneId = layout.categoryLanes[laneIndex];
     const lane = LANES[laneId];
     const isPatternLane = lane.type === 'pattern';
+    const isHybridLane = HYBRID_LANES.includes(laneId);
 
     // Check if tap is on lane header
     const isOnHeader = x < layout.gridLeft;
@@ -1026,10 +1084,16 @@ export function SequencerCanvas() {
 
       lastTapRef.current = { laneId, time: now };
 
-      // For pattern lanes, single tap cycles pattern
-      if (isPatternLane && !isOnHeader) {
+      // For pattern lanes, single tap cycles pattern (but not if muted - need double-tap to unmute first)
+      if (isPatternLane && !isOnHeader && !mutedLanes[laneId]) {
         cyclePattern(laneId);
         return;
+      }
+
+      // For hybrid lanes (like SUB), single tap on header cycles character (but not if muted)
+      if (isHybridLane && isOnHeader && !mutedLanes[laneId]) {
+        cycleCharacter(laneId);
+        // Don't return - also set up long-press for clear
       }
 
       // Long-press = clear lane (grid) or deactivate (pattern)
@@ -1057,7 +1121,7 @@ export function SequencerCanvas() {
     if (!unlockedLanes[laneId]) return;
 
     toggleStep(laneId, step);
-  }, [ensureAudioReady, getLayout, dimensions, toggleStep, toggleMute, clearLane, cyclePattern, toggleActive, unlockedLanes, setCurrentCategory, setTension, triggerDrop, playStab, layers, selectLayer, lockAndBuild, canAddLayer]);
+  }, [ensureAudioReady, getLayout, dimensions, toggleStep, toggleMute, clearLane, cyclePattern, cycleCharacter, toggleActive, unlockedLanes, setCurrentCategory, toggleCategoryMute, setTension, triggerDrop, playStab, layers, selectLayer, lockAndBuild, canAddLayer]);
 
   // Handle pointer move for tension slider
   const handlePointerMove = useCallback((event) => {
@@ -1078,6 +1142,7 @@ export function SequencerCanvas() {
   const handlePointerUp = useCallback(() => {
     isDraggingTensionRef.current = false;
 
+    // Cancel lane long-press
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
