@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useSequencer } from '../../hooks/useSequencer.js';
 import { useAudioEngine } from '../../hooks/useAudioEngine.js';
+import { useRecording } from '../../hooks/useRecording.js';
 import {
   LANES,
   LANE_HEIGHT,
@@ -21,6 +22,7 @@ import {
   LAYER_INDICATOR_RADIUS,
   LAYER_INDICATOR_SPACING,
   CONTROL_STRIP_HEIGHT,
+  RECORDING_STATE,
 } from '../../engine/constants.js';
 import { getPatternName } from '../../engine/sequencer.js';
 import { getPerfSettings } from '../../utils/performance.js';
@@ -66,6 +68,20 @@ export function SequencerCanvas() {
   // Audio engine
   const { ensureAudioReady, subscribeToSidechain, subscribeToBeat } = useAudioEngine();
 
+  // Recording
+  const {
+    recordingState,
+    remainingTimeFormatted,
+    isRecording: isRecordingAudio,
+    isEnding,
+    isComplete,
+    isIdle: isRecordingIdle,
+    isInWarningZone,
+    toggleRecording,
+    redoRecording,
+    download,
+  } = useRecording();
+
   // Visual effect state
   const sidechainRef = useRef(0);
   const hitFlashRef = useRef({}); // { laneIndex_step: flashIntensity }
@@ -79,6 +95,7 @@ export function SequencerCanvas() {
   const dropFlashRef = useRef(0); // Flash intensity for drop
   const lockBuildFlashRef = useRef(0); // Flash intensity for lock+build button
   const newLayerPulseRef = useRef(0); // Pulse for newly created layer
+  const recordingPulseRef = useRef(0); // Pulse for recording button
 
   // Interaction state for double-tap and long-press
   const lastTapRef = useRef({ laneId: null, time: 0 });
@@ -203,6 +220,11 @@ export function SequencerCanvas() {
       dropFlashRef.current *= 0.9;
       lockBuildFlashRef.current *= 0.88;
       newLayerPulseRef.current *= 0.92;
+
+      // Recording pulse (continuous sine wave when recording)
+      if (isRecordingAudio) {
+        recordingPulseRef.current += isInWarningZone ? 0.15 : 0.08; // Faster pulse in warning zone
+      }
       if (perf.breathingEnabled) {
         breathePhaseRef.current += 0.02;
       }
@@ -405,6 +427,15 @@ export function SequencerCanvas() {
       ctx.stroke();
 
       // --- ZONE 3: Tension Slider ---
+      // BUILD label
+      ctx.save();
+      ctx.fillStyle = '#666666';
+      ctx.font = 'bold 9px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('BUILD', layout.tensionZoneX + 4, stripCenterY - 16);
+      ctx.restore();
+
       const tensionBarX = layout.tensionZoneX + 12;
       const tensionBarWidth = layout.tensionZoneWidth - 24;
       const tensionBarHeight = 10;
@@ -853,7 +884,7 @@ export function SequencerCanvas() {
 
     animationId = requestAnimationFrame(render);
     return () => cancelAnimationFrame(animationId);
-  }, [dimensions, grid, playhead, getLayout, mutedLanes, unlockedLanes, activeLanes, currentCategory, tension, layers, activeLayerIndex, canAddLayer]);
+  }, [dimensions, grid, playhead, getLayout, mutedLanes, unlockedLanes, activeLanes, currentCategory, tension, layers, activeLayerIndex, canAddLayer, isRecordingAudio, isInWarningZone]);
 
   // Handle tap interactions
   const handlePointerDown = useCallback(async (event) => {
@@ -1083,6 +1114,22 @@ export function SequencerCanvas() {
     }
   }, [ensureAudioReady, canAddLayer, lockAndBuild]);
 
+  // Handle REC button click
+  const handleRecord = useCallback(async () => {
+    await ensureAudioReady();
+    toggleRecording();
+  }, [ensureAudioReady, toggleRecording]);
+
+  // Handle RE-DO button click
+  const handleRedo = useCallback(() => {
+    redoRecording();
+  }, [redoRecording]);
+
+  // Handle DOWNLOAD button click
+  const handleDownload = useCallback(() => {
+    download();
+  }, [download]);
+
   return (
     <div className="relative w-full h-full">
       <canvas
@@ -1097,40 +1144,105 @@ export function SequencerCanvas() {
         style={{ display: 'block', touchAction: 'none' }}
       />
 
-      {/* Bottom Controls: LOCK+BUILD and Play/Pause */}
-      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4">
-        {/* LOCK+BUILD Button */}
-        <button
-          onClick={handleLockBuild}
-          disabled={!canAddLayer}
-          className={`h-10 px-4 rounded-lg font-mono text-xs font-bold transition-all active:scale-95 ${
-            canAddLayer
-              ? 'bg-cyan-500 text-black hover:bg-cyan-400'
-              : 'bg-gray-700 text-gray-500 cursor-not-allowed'
-          }`}
-          aria-label="Lock current layer and build new one"
-        >
-          {canAddLayer ? 'LOCK + BUILD' : 'MAX LAYERS'}
-        </button>
+      {/* Post-Recording Overlay */}
+      {isComplete && (
+        <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-20">
+          <p className="text-white font-mono text-lg mb-8">Recording complete!</p>
+          <div className="flex items-center gap-6">
+            <button
+              onClick={handleRedo}
+              className="h-12 px-6 rounded-lg font-mono text-sm font-bold bg-gray-700 text-white hover:bg-gray-600 active:scale-95 transition-all"
+              aria-label="Discard recording and go back"
+            >
+              GO BACK
+            </button>
+            <button
+              onClick={handleDownload}
+              className="h-12 px-6 rounded-lg font-mono text-sm font-bold bg-green-600 text-white hover:bg-green-500 active:scale-95 transition-all"
+              aria-label="Download recording"
+            >
+              DOWNLOAD
+            </button>
+          </div>
+        </div>
+      )}
 
-        {/* Play/Pause Button */}
-        <button
-          onClick={handlePlayPause}
-          className="w-14 h-14 rounded-full bg-gray-800/80 border border-gray-600 flex items-center justify-center hover:bg-gray-700/80 active:scale-95 transition-all"
-          aria-label={isPlaying ? 'Pause' : 'Play'}
-        >
-          {isPlaying ? (
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
-              <rect x="6" y="4" width="4" height="16" rx="1" />
-              <rect x="14" y="4" width="4" height="16" rx="1" />
-            </svg>
-          ) : (
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
-              <path d="M8 5v14l11-7z" />
-            </svg>
-          )}
-        </button>
-      </div>
+      {/* Recording Timer Display */}
+      {(isRecordingAudio || isEnding) && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-10">
+          <div className={`px-4 py-2 rounded-lg font-mono text-lg font-bold ${
+            isInWarningZone ? 'bg-red-600/90 text-white' : 'bg-red-500/80 text-white'
+          } ${isInWarningZone ? 'animate-pulse' : ''}`}>
+            {isEnding ? 'Finishing...' : `REC ${remainingTimeFormatted}`}
+          </div>
+        </div>
+      )}
+
+      {/* Bottom Controls: LOCK+BUILD, Play/Pause, and REC */}
+      {!isComplete && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4">
+          {/* LOCK+BUILD Button */}
+          <button
+            onClick={handleLockBuild}
+            disabled={!canAddLayer || isRecordingAudio}
+            className={`h-10 px-4 rounded-lg font-mono text-xs font-bold transition-all active:scale-95 ${
+              canAddLayer && !isRecordingAudio
+                ? 'bg-cyan-500 text-black hover:bg-cyan-400'
+                : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+            }`}
+            aria-label="Lock current layer and build new one"
+          >
+            {canAddLayer ? 'LOCK + BUILD' : 'MAX LAYERS'}
+          </button>
+
+          {/* Play/Pause Button */}
+          <button
+            onClick={handlePlayPause}
+            className="w-14 h-14 rounded-full bg-gray-800/80 border border-gray-600 flex items-center justify-center hover:bg-gray-700/80 active:scale-95 transition-all"
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? (
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
+              </svg>
+            ) : (
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </button>
+
+          {/* REC Button */}
+          <button
+            onClick={handleRecord}
+            disabled={isEnding}
+            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all active:scale-95 ${
+              isRecordingAudio
+                ? 'bg-red-600 hover:bg-red-500'
+                : 'bg-gray-800/80 border-2 border-red-500 hover:bg-gray-700/80'
+            } ${isEnding ? 'opacity-50 cursor-not-allowed' : ''}`}
+            aria-label={isRecordingAudio ? 'Stop recording' : 'Start recording'}
+            style={{
+              boxShadow: isRecordingAudio
+                ? `0 0 ${8 + Math.sin(recordingPulseRef.current) * 8}px ${COLORS.recording.active}`
+                : 'none',
+            }}
+          >
+            {isRecordingAudio ? (
+              // Stop icon (square)
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            ) : (
+              // Record icon (circle)
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="#ef4444">
+                <circle cx="12" cy="12" r="8" />
+              </svg>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import {
   LEAD_PHRASES,
   ARP_NOTES,
   LAYER_GAIN_DB,
+  RECORDING,
 } from './constants.js';
 import { initClock, disposeClock, emitSidechain, getTempo } from './clock.js';
 
@@ -43,6 +44,12 @@ let layerGain = null;  // Gain node for layer auto-EQ
 let currentLayerCount = 1;  // Track current layer count for gain adjustment
 let isInitialized = false;
 
+// Recording system
+let recorder = null;
+let recordingFadeGain = null;  // For graceful fade-out
+let isRecording = false;
+let recordingBlob = null;
+
 // Note indices for cycling through scales/patterns
 let subNoteIndex = 0;
 let percPitchIndex = 0;
@@ -70,14 +77,21 @@ export async function initAudio() {
     console.log('Audio context started');
 
     // === MASTER CHAIN ===
+    // Recording fade gain (for graceful fade-out during recording)
+    recordingFadeGain = new Tone.Gain(1).toDestination();
+
     masterCompressor = new Tone.Compressor({
       threshold: -24,
       ratio: 4,
       attack: 0.003,
       release: 0.25,
-    }).toDestination();
+    }).connect(recordingFadeGain);
 
     masterLimiter = new Tone.Limiter(-1).connect(masterCompressor);
+
+    // === RECORDING ===
+    recorder = new Tone.Recorder();
+    recordingFadeGain.connect(recorder);
 
     // Layer gain node for auto-EQ based on layer count
     layerGain = new Tone.Gain(1).connect(masterLimiter);
@@ -776,6 +790,124 @@ export function triggerDrop() {
   playImpact();
 }
 
+// === RECORDING FUNCTIONS ===
+
+/**
+ * Start recording audio
+ * @returns {boolean} True if recording started successfully
+ */
+export function startRecording() {
+  if (!isInitialized || !recorder || isRecording) {
+    console.warn('Cannot start recording: not ready or already recording');
+    return false;
+  }
+
+  try {
+    // Reset fade gain to full volume
+    if (recordingFadeGain) {
+      recordingFadeGain.gain.cancelScheduledValues(Tone.now());
+      recordingFadeGain.gain.setValueAtTime(1, Tone.now());
+    }
+
+    recorder.start();
+    isRecording = true;
+    recordingBlob = null;
+    console.log('Recording started');
+    return true;
+  } catch (error) {
+    console.error('Failed to start recording:', error);
+    return false;
+  }
+}
+
+/**
+ * Stop recording with optional graceful fade-out
+ * @param {boolean} fadeOut - Whether to apply graceful fade-out
+ * @returns {Promise<Blob|null>} The recorded audio blob, or null if failed
+ */
+export async function stopRecording(fadeOut = true) {
+  if (!isInitialized || !recorder || !isRecording) {
+    console.warn('Cannot stop recording: not recording');
+    return null;
+  }
+
+  try {
+    if (fadeOut && recordingFadeGain) {
+      // Apply graceful fade-out
+      const now = Tone.now();
+      const fadeSeconds = RECORDING.fadeOutDurationMs / 1000;
+      recordingFadeGain.gain.cancelScheduledValues(now);
+      recordingFadeGain.gain.setValueAtTime(recordingFadeGain.gain.value, now);
+      recordingFadeGain.gain.linearRampToValueAtTime(0, now + fadeSeconds);
+
+      // Wait for fade to complete
+      await new Promise(resolve => setTimeout(resolve, RECORDING.fadeOutDurationMs));
+    }
+
+    // Stop recorder and get blob
+    recordingBlob = await recorder.stop();
+    isRecording = false;
+
+    // Reset fade gain back to full volume for live playback
+    if (recordingFadeGain) {
+      recordingFadeGain.gain.cancelScheduledValues(Tone.now());
+      recordingFadeGain.gain.setValueAtTime(1, Tone.now());
+    }
+
+    console.log('Recording stopped, blob size:', recordingBlob?.size);
+    return recordingBlob;
+  } catch (error) {
+    console.error('Failed to stop recording:', error);
+    isRecording = false;
+    return null;
+  }
+}
+
+/**
+ * Check if currently recording
+ * @returns {boolean}
+ */
+export function getIsRecording() {
+  return isRecording;
+}
+
+/**
+ * Get the last recorded blob
+ * @returns {Blob|null}
+ */
+export function getRecordingBlob() {
+  return recordingBlob;
+}
+
+/**
+ * Clear the recorded blob (for RE-DO)
+ */
+export function clearRecording() {
+  recordingBlob = null;
+}
+
+/**
+ * Download the recorded audio
+ * @param {string} filename - Optional filename (default: 'onyx-pulse-track.webm')
+ */
+export function downloadRecording(filename = 'onyx-pulse-track.webm') {
+  if (!recordingBlob) {
+    console.warn('No recording to download');
+    return;
+  }
+
+  const url = URL.createObjectURL(recordingBlob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  console.log('Recording downloaded:', filename);
+}
+
 /**
  * Cleanup audio engine
  */
@@ -790,7 +922,7 @@ export function disposeAudio() {
   ];
 
   const filters = [hatFilter, clapFilter, riserFilter, reverseFilter, masterHighpass];
-  const other = [wobbleLFO, sidechainGain, masterCompressor, masterLimiter, layerGain];
+  const other = [wobbleLFO, sidechainGain, masterCompressor, masterLimiter, layerGain, recordingFadeGain, recorder];
 
   [...synths, ...filters, ...other].forEach(node => {
     if (node) {
@@ -822,6 +954,8 @@ export function disposeAudio() {
   masterCompressor = null;
   masterLimiter = null;
   layerGain = null;
+  recordingFadeGain = null;
+  recorder = null;
 
   isInitialized = false;
   currentLayerCount = 1;
@@ -829,4 +963,6 @@ export function disposeAudio() {
   percPitchIndex = 0;
   leadNoteIndex = 0;
   arpNoteIndex = 0;
+  isRecording = false;
+  recordingBlob = null;
 }

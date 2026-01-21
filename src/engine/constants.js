@@ -245,6 +245,21 @@ export const LAYER_GAIN_DB = {
   2: -3,    // Two layers: -3dB each
 };
 
+// === RECORDING SYSTEM ===
+export const RECORDING = {
+  maxDurationMs: 60000,       // 60 seconds max
+  fadeOutDurationMs: 2000,    // 2 second graceful fade
+  warningThresholdMs: 10000,  // Flash faster at 10 seconds remaining
+};
+
+// Recording states
+export const RECORDING_STATE = {
+  IDLE: 'idle',
+  RECORDING: 'recording',
+  ENDING: 'ending',      // During fade-out
+  COMPLETE: 'complete',  // Showing RE-DO / DOWNLOAD
+};
+
 // === COLOR SYSTEM — "Neon Noir" ===
 export const COLORS = {
   // === WORLD (The Void) ===
@@ -295,5 +310,12 @@ export const COLORS = {
     locked: '#f97316',                       // ◆ Locked (orange)
     lockBuildButton: '#22d3ee',              // LOCK+BUILD button
     lockBuildDisabled: '#4a5568',            // Disabled button
+  },
+
+  // === RECORDING ===
+  recording: {
+    idle: 'rgba(255, 255, 255, 0.6)',       // White outline when idle
+    active: '#ef4444',                       // Red when recording
+    pulse: '#ff6b6b',                        // Lighter red for pulse
   },
 };

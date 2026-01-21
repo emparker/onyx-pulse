@@ -38,7 +38,8 @@ onyx-pulse/
 │   │   └── constants.js         # All magic numbers live HERE
 │   ├── hooks/
 │   │   ├── useSequencer.js      # React wrapper for sequencer state
-│   │   └── useAudioEngine.js    # Tone.js lifecycle management
+│   │   ├── useAudioEngine.js    # Tone.js lifecycle management
+│   │   └── useRecording.js      # Recording state + timer + download
 │   ├── utils/
 │   │   └── math.js              # clamp, lerp, mapRange
 │   └── styles/
@@ -62,19 +63,18 @@ onyx-pulse/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  [DRUMS]        [BASS]        [MELODIC]    ← Category tabs │
-├─────────────────────────────────────────────────────────────┤
-│  TENSION ═══════════●═══════════════════════════ [DROP]    │
+│  [DRUMS] [BASS] [MELODIC]  ● ◆  BUILD ══●══  [DROP] [BPM] │ ← Control strip
 ├─────────────────────────────────────────────────────────────┤
 │   KICK  ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○   ← Grid lanes   │
 │   HAT   ● ○ ● ○ ● ○ ● ○ ● ○ ● ○ ● ○ ● ○                   │
 │   CLAP  ○ ○ ○ ○ ● ○ ○ ○ ○ ○ ○ ○ ● ○ ○ ○                   │
 │   PERC  ○ ○ ● ○ ○ ○ ● ○ ○ ○ ● ○ ○ ○ ● ○                   │
 │          ▲                                                  │
-│          └── playhead (moves right, loops)      [128 BPM]  │
+│          └── playhead (moves right, loops)                  │
 ├─────────────────────────────────────────────────────────────┤
-│ [ZAP] [IMPACT] [VOCAL] [RISER]          ← Stab buttons    │
-│                    [▶/❚❚]                ← Play/Pause      │
+│ [LASER] [IMPACT]                        ← Stab buttons     │
+│ [REVERSE] [RISER]                         (2x2 grid)       │
+│           [LOCK+BUILD]  [▶/❚❚]  [⏺ REC]  ← Bottom controls │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,7 +84,7 @@ onyx-pulse/
 |------|-------|-------------|
 | **Grid** | kick, hat, clap, perc, sub | 16-step tap-to-toggle |
 | **Pattern** | wobble, lead, chord, arp | Tap to cycle pre-made patterns |
-| **Stab** | zap, impact, vocal, riser | One-shot buttons (not sequenced) |
+| **Stab** | laser, impact, reverse, riser | One-shot buttons (2x2 grid) |
 
 ### Category Tabs
 
@@ -145,13 +145,13 @@ Nine synthesizers + four stabs + build/drop system.
 | **LEAD** | MonoSynth | Hook 1, Hook 2, Hook 3 |
 | **ARP** | MonoSynth | Up, Down, Random (Cm7 arpeggio) |
 
-#### Stab FX
+#### Stab FX (2x2 grid)
 
 | Stab | Sound |
 |------|-------|
-| **ZAP** | FM synth laser zap |
+| **LASER** | FM synth pitch-down sweep (C5→C2) |
 | **IMPACT** | Pink noise sweep + membrane thump |
-| **VOCAL** | Formant-like filter sweep |
+| **REVERSE** | Reverse cymbal swell (fade IN then cut) |
 | **RISER** | White noise with 2-bar filter sweep |
 
 #### Build/Drop System
@@ -162,7 +162,33 @@ Nine synthesizers + four stabs + build/drop system.
 
 **Sidechain:** When kick fires, other instruments duck via gain automation.
 
-### 4.4 Constants (`src/engine/constants.js`)
+### 4.4 Recording (`src/hooks/useRecording.js`)
+
+60-second audio recording with graceful fade-out.
+
+**Key exports:**
+- `startRecording()` — Begin recording (Tone.Recorder)
+- `stopRecording()` — Stop with optional fade-out
+- `toggleRecording()` — Single button control
+- `redoRecording()` — Discard and return to idle
+- `download()` — Save WebM audio file
+
+**Recording States:**
+- `IDLE` — Ready to record
+- `RECORDING` — Capturing audio, timer counting down
+- `ENDING` — Graceful 2-second fade-out
+- `COMPLETE` — Showing GO BACK / DOWNLOAD overlay
+
+**Constants:**
+```javascript
+RECORDING = {
+  maxDurationMs: 60000,       // 60 seconds max
+  fadeOutDurationMs: 2000,    // 2 second graceful fade
+  warningThresholdMs: 10000,  // Flash faster at 10 seconds remaining
+}
+```
+
+### 4.5 Constants (`src/engine/constants.js`)
 
 All magic numbers in one place:
 
@@ -178,7 +204,7 @@ LANE_HEIGHT = 55
 TRIGGER_RADIUS = 10
 LANE_PADDING = 20
 HEADER_WIDTH = 60
-STAB_BAR_HEIGHT = 70
+STAB_BAR_HEIGHT = 100  // 2x2 stab grid
 
 // Categories
 CATEGORIES = { drums, bass, melodic }
@@ -197,8 +223,8 @@ PATTERN_LANES = ['wobble', 'chord', 'lead', 'arp']
 C_MINOR_BASS = ['C2', 'Eb2', 'F2', 'G2', 'Bb2']
 ARP_NOTES = ['C3', 'Eb3', 'G3', 'Bb3', 'C4']
 
-// Stabs
-STAB_ORDER = ['zap', 'impact', 'vocal', 'riser']
+// Stabs (2x2 grid: top-left, top-right, bottom-left, bottom-right)
+STAB_ORDER = ['laser', 'impact', 'reverse', 'riser']
 
 // Build/Drop
 BUILD_DROP = {
@@ -233,12 +259,15 @@ BUILD_DROP = {
 
 | Control | Location | Action |
 |---------|----------|--------|
-| Category tabs | Top | Switch between DRUMS/BASS/MELODIC |
-| Tension slider | Below tabs | Drag to build tension (0-100%) |
-| DROP button | Right of tension | Trigger the drop |
-| Stab buttons | Bottom | Tap for one-shot FX |
-| Play/Pause | Bottom center | Toggle clock |
-| Tempo +/- | Below tension bar, right | Adjust BPM (±4) |
+| Category tabs | Control strip (left) | Switch between DRUMS/BASS/MELODIC |
+| Layer dots | Control strip | ● active, ◆ locked — tap to select |
+| BUILD slider | Control strip | Drag to build tension (0-100%) |
+| DROP button | Control strip | Trigger the drop |
+| Tempo +/- | Control strip (right) | Adjust BPM (±4) |
+| Stab buttons | Middle (2x2 grid) | Tap for one-shot FX |
+| LOCK+BUILD | Bottom bar | Lock layer and create new one |
+| Play/Pause | Bottom bar (center) | Toggle clock |
+| REC button | Bottom bar (right) | Start/stop 60-second recording |
 
 ---
 
@@ -277,10 +306,10 @@ lead:   '#4ade80' (green)
 arp:    '#f472b6' (pink)
 
 // Stab colors
-zap:    '#facc15' (yellow)
-impact: '#ef4444' (red)
-vocal:  '#8b5cf6' (violet)
-riser:  '#06b6d4' (cyan)
+laser:   '#facc15' (yellow)
+impact:  '#ef4444' (red)
+reverse: '#8b5cf6' (violet)
+riser:   '#06b6d4' (cyan)
 
 // Category colors
 drums:   '#f97316' (orange)
@@ -356,19 +385,22 @@ Before any commit:
 4. **Pattern lanes** — Tap to cycle patterns, patterns play
 5. **Double-tap mute** — Toggles on/off correctly
 6. **Long-press clear** — Clears grid lanes / deactivates pattern lanes
-7. **Tension slider** — Drag works, filter sweeps audibly
+7. **BUILD slider** — Drag works, filter sweeps audibly
 8. **DROP button** — Impact plays, filter resets
-9. **Stab buttons** — All four play distinct sounds
+9. **Stab buttons** — All four play distinct sounds (2x2 grid)
 10. **Tempo control** — +/- buttons work (80-160 range)
-11. **60fps** — Smooth playhead, no stuttering
-12. **Mobile** — Touch interactions work
+11. **Layer system** — LOCK+BUILD creates layers, dots switch between them
+12. **Recording** — REC starts/stops, timer counts down, download works
+13. **60fps** — Smooth playhead, no stuttering
+14. **Mobile** — Touch interactions work
 
 Full integration test:
-- Enable all lane types
-- Drag tension to 100%
-- Hit DROP
+- Enable all lane types across categories
+- Create 2 layers with LOCK+BUILD
+- Drag tension to 100%, hit DROP
 - Tap stabs during playback
-- Cycle through all patterns
+- Start recording, perform for 30 seconds, stop
+- Download recording and verify audio
 
 ---
 
@@ -398,6 +430,17 @@ Full integration test:
 2. Check for memory leaks (ripples/trails not cleaning up)
 3. Profile with Chrome DevTools
 
+### "Recording Not Working"
+1. Check: Is audio initialized? (`ensureAudioReady()` called)
+2. Check: Is `recorder` connected to `recordingFadeGain`?
+3. Check: Recording state — should be `IDLE` to start
+4. Browser: Some browsers may not support MediaRecorder WebM
+
+### "Downloaded File Empty/Silent"
+1. Check: Was audio playing during recording?
+2. Check: Did recording stop properly? (state should be `COMPLETE`)
+3. Check: `recordingBlob` should have non-zero size
+
 ---
 
 ## 12. Reference Links
@@ -415,8 +458,8 @@ The project is complete when:
 - [x] Category-based lane system (DRUMS/BASS/MELODIC)
 - [x] 5 grid lanes (kick, hat, clap, perc, sub)
 - [x] 4 pattern lanes (wobble, chord, lead, arp)
-- [x] 4 stab buttons (zap, impact, vocal, riser)
-- [x] Tension slider + DROP button
+- [x] 4 stab buttons (laser, impact, reverse, riser) — 2x2 grid
+- [x] BUILD slider + DROP button
 - [x] Tap to toggle grid triggers
 - [x] Tap to cycle pattern lanes
 - [x] Playhead loops at 128 BPM (adjustable 80-160)
@@ -425,6 +468,8 @@ The project is complete when:
 - [x] Visual feedback (flash, ripple, breathing, drop flash)
 - [x] Mute/clear lane gestures
 - [x] Tempo control UI
+- [x] Layer system (2 layers max, LOCK+BUILD)
+- [x] Recording (60 sec, graceful fade, download)
 - [ ] 60fps on mobile
 - [ ] PWA offline support
 - [ ] Zero console errors in production
@@ -434,7 +479,7 @@ The project is complete when:
 ## 14. Historical Context
 
 This project was originally designed as a physics-based marble toy (see `docs/archive/`).
-It was migrated to a lane-based step sequencer, then expanded to a full EDM creation toy:
+It evolved through multiple phases:
 
 **Phase 1 (Sequencer Migration):**
 - Predictable timing — Music plays exactly on beat
@@ -444,12 +489,19 @@ It was migrated to a lane-based step sequencer, then expanded to a full EDM crea
 **Phase 2 (EDM Expansion):**
 - Category tabs — Organized 9 lanes into 3 categories
 - Pattern lanes — Pre-made musical patterns (wobble, chord, lead, arp)
-- Stab buttons — Instant EDM moments (impact, riser, zap, vocal)
-- Build/Drop system — Tension slider for EDM builds + DROP button
+- Stab buttons — Renamed to LASER/IMPACT/REVERSE/RISER, 2x2 grid layout
+- Build/Drop system — BUILD slider for tension + DROP button
+- Layered scenes — 2-layer system with LOCK+BUILD
 - C minor lock — All content harmonically compatible
+
+**Phase 3 (Recording & Share):**
+- 60-second recording with graceful 2-second fade-out
+- REC button with pulsing animation and countdown timer
+- Post-recording overlay with GO BACK / DOWNLOAD buttons
+- WebM audio export
 
 The archived docs preserve the original vision for reference.
 
 ---
 
-*Last Updated: January 2026 (Post-EDM Expansion)*
+*Last Updated: January 2026 (Post-Recording Feature)*

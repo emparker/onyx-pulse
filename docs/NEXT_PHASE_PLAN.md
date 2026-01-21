@@ -6,7 +6,7 @@
 ## Roadmap Progress
 
 ```
-Phase 1: Pads ✅ COMPLETE  →  Phase 2: Layered Scenes ✅ COMPLETE  →  Phase 3: Recording/Share
+Phase 1: Pads ✅ COMPLETE  →  Phase 2: Layered Scenes ✅ COMPLETE  →  Phase 3: Recording/Share ✅ COMPLETE
 ```
 
 ---
@@ -109,31 +109,127 @@ Users can stack up to **2 layers** of patterns that play simultaneously.
 
 ---
 
-## Phase 3: Recording & Share (Future)
+## Phase 3: Recording & Share ✅ COMPLETE
 
-**Approach: Record on Play** (not always-on buffer)
+**Approach: Manual Record Mode** (user-initiated, 60 second max)
 
-Rationale: Simpler implementation, lower battery/memory impact, achieves same goal of capturing moments.
+Rationale: Gives users control over what they capture while keeping it simple. One button, one decision.
 
-### How It Works
+### Strategic Decisions
 
-- Recording starts automatically when playback starts
-- Recording stops when paused
-- One-tap export when satisfied
-- No decisions, no dialogs
+| Decision | Rationale |
+|----------|-----------|
+| **60 second max** | Aligns with social platforms (Reels, TikTok, Shorts). 32 bars at 128 BPM. |
+| **Graceful fade-out** | 2-second fade at end instead of hard cut. Less jarring. |
+| **Single record mode** | No "loop export" vs "live record" choice. One mode captures everything. |
+| **Stabs stay ephemeral** | Captured at trigger moment, NOT looped or compounded into layers. |
+| **Label the tension slider** | Add "BUILD" label - currently unlabeled and confusing. |
 
-### Planned Features
+### Recording UX Flow
 
-- Save button (exports current recording)
-- MP4 output with reactive visuals
-- Brand identity baked in
-- Instagram/TikTok friendly format (9:16 vertical)
+1. User taps **REC** button → recording starts, button pulses red
+2. Timer shows remaining time (60 → 0)
+3. User performs: plays, hits stabs, builds tension, drops
+4. Recording ends when:
+   - User taps REC again, OR
+   - 60 seconds reached (graceful 2-sec fade-out)
+5. **SHARE** button appears → exports audio/video
 
-### Open Questions
+### What Gets Captured
 
-- Web Audio recording vs. canvas + audio merge?
-- File size limits for social sharing?
-- Offline storage before export?
+| Element | Behavior |
+|---------|----------|
+| Grid lanes (all layers) | Merged stereo audio |
+| Pattern lanes (all layers) | Merged stereo audio |
+| Stabs | One-shot at exact trigger moment |
+| Tension slider | Continuous audio effect (filter sweep) |
+| DROP impacts | Captured when triggered |
+| Tempo changes | Captured in real-time |
+
+### What Does NOT Loop/Compound
+
+- Stabs are DJ flourishes, not loop elements
+- If users want a "clean" loop, they simply don't hit stabs during recording
+
+### UI Changes
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  [DRUMS] [BASS] [MELODIC]  ● ◆   BUILD ══●════  [DROP]     │  ← "BUILD" label added
+├─────────────────────────────────────────────────────────────┤
+│   (lanes...)                                                │
+├─────────────────────────────────────────────────────────────┤
+│ [LASER] [IMPACT]    [LOCK+BUILD]    [▶/❚❚]  [⏺ REC]       │  ← REC button added
+│ [REVERSE] [RISER]                                           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Recording States
+
+| State | REC Button | Timer | Behavior |
+|-------|------------|-------|----------|
+| **Idle** | White outline | Hidden | Ready to record |
+| **Recording** | Pulsing red fill | "0:45" countdown | Capturing audio |
+| **Final 10 sec** | Faster pulse | Countdown | Visual warning |
+| **Ending** | Fade animation | "Done" | 2-sec graceful fade |
+| **Complete** | Hidden | Hidden | GO BACK + DOWNLOAD buttons appear |
+
+### Technical Approach
+
+**Audio Recording:**
+- Use `Tone.Recorder` connected to master output
+- Records full stereo mix (all layers + stabs + effects)
+- Output format: WebM audio (widely supported)
+
+**Export:** Audio-only download (no video for v1)
+
+**Re-record:** User can discard and try again before downloading
+
+### Final Decisions
+
+| Question | Decision |
+|----------|----------|
+| Video export? | **No** — Audio-only for v1 |
+| Share flow? | **Download only** — No share button |
+| Re-record? | **Yes** — "GO BACK" button to discard and try again |
+
+### Post-Recording UI
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Recording complete!                       │
+│                                                              │
+│              [GO BACK]          [DOWNLOAD]                     │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **GO BACK**: Discards recording, returns to normal playback state
+- **DOWNLOAD**: Saves WebM/audio file to device
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/engine/constants.js` | Added `RECORDING` config, `RECORDING_STATE` enum, recording colors |
+| `src/engine/audio.js` | Added `Tone.Recorder`, `recordingFadeGain`, recording functions |
+| `src/hooks/useRecording.js` | New hook for recording state, timer, actions |
+| `src/components/Canvas/SequencerCanvas.jsx` | REC button, timer display, post-recording overlay, BUILD label |
+
+### Verification Checklist
+
+- [x] REC button appears in bottom bar
+- [x] Tap REC starts recording, button turns red and pulses
+- [x] Timer counts down from 1:00
+- [x] Timer pulses faster in last 10 seconds (warning zone)
+- [x] Tap REC again stops recording manually
+- [x] Auto-stop at 60 seconds with graceful fade-out
+- [x] Post-recording overlay shows GO BACK and DOWNLOAD buttons
+- [x] GO BACK discards recording and returns to idle
+- [x] DOWNLOAD saves WebM audio file
+- [x] BUILD label appears above tension slider
+- [x] LOCK+BUILD disabled during recording
+- [x] Build succeeds with no errors
 
 ---
 
